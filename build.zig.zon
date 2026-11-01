@@ -1,0 +1,14 @@
+.{
+    .name = .zui_sokol,
+    .version = "0.1.0",
+    .fingerprint = 0xbb167295a17d742c, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .zui = .{ .path = "../zui" },
+        .sokol = .{
+            .url = "git+https://github.com/floooh/sokol-zig#cc3473c17bed471d608e221adf0fdcb5a61163e0",
+            .hash = "sokol-0.1.0-pb1HK7kgQwAn3WHvyiRMRsck4OexoWoFrKPTnLAEsJYH",
+        },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "examples", "README.md", "LICENSE" },
+}
