@@ -9,8 +9,7 @@ sokol_debugtext, on D3D11 (Windows), Metal (macOS) or OpenGL (Linux).
 ## Requirements
 
 - Zig **0.16.0**
-- zui checked out beside this repository (`../zui`), while the two are
-  developed together
+- zui, fetched automatically
 - sokol-zig, fetched automatically
 - On Linux: `libx11-dev libxi-dev libxcursor-dev libgl1-mesa-dev libpulse-dev`
 
@@ -24,6 +23,18 @@ zig build demo -Dgl=true         # force OpenGL instead of D3D11 or Metal
 
 The demo runs `examples/showcase.zig`, the same UI as the zui-terminal
 demo, so the two renderers can be compared.
+
+## Developing against a local zui
+
+`build.zig.zon` pins zui to a commit. To build against a zui working copy
+instead, without editing it:
+
+```sh
+zig build test --fork=../zui
+```
+
+To move the pin, push the zui change and run
+`zig fetch --save=zui git+https://github.com/AaronJClausen/zui#<commit>`.
 
 ## How zui maps onto sokol
 

@@ -4,7 +4,10 @@
     .fingerprint = 0xbb167295a17d742c, // Changing this has security and trust implications.
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
-        .zui = .{ .path = "../zui" },
+        .zui = .{
+            .url = "git+https://github.com/AaronJClausen/zui#c41b5717f30be2852e035886bc31b9c12ff1d917",
+            .hash = "zui-0.5.0-xfvfqiO5BgBnODOv2IdQBpwOGjfIXwd6wbbxGl98ogjp",
+        },
         .sokol = .{
             .url = "git+https://github.com/floooh/sokol-zig#cc3473c17bed471d608e221adf0fdcb5a61163e0",
             .hash = "sokol-0.1.0-pb1HK7kgQwAn3WHvyiRMRsck4OexoWoFrKPTnLAEsJYH",
