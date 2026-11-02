@@ -39,6 +39,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+    if (target.result.os.tag == .windows) demo.subsystem = .windows;
     b.installArtifact(demo);
 
     const run_demo = b.addRunArtifact(demo);
