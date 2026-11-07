@@ -114,7 +114,7 @@ test "the renderer draws exactly the base commands and images, into sokol_app's 
     ui.beginFrame(&.{ .params = .{ .now = .zero, .viewport = .{ 100, 100 } } });
     const frame = ui.endFrame();
     defer ui.release(frame);
-    var renderer: Renderer = .{ .text = &text, .pipeline = .{} };
+    var renderer: Renderer = .{ .text = &text, .pipeline = .{}, .alpha_coverage_pipeline = .{} };
     try std.testing.expectError(error.UnsupportedSurface, renderer.zuiSubmit(.{ .offscreen = .{ .size = .{ 100, 100 } } }, frame));
 }
 

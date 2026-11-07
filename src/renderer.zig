@@ -9,12 +9,14 @@ const options = @import("zui_sokol_options");
 const Text = @import("root.zig").Text;
 const Image = @import("root.zig").Image;
 
-/// A `win32` surface needs an OpenGL context of the renderer's own, so it
-/// is drawn into only when sokol_gfx is built with OpenGL (`-Dgl=true`).
-pub const draws_into_win32 = builtin.os.tag == .windows and options.opengl;
-const wgl = if (draws_into_win32) @import("wgl.zig") else struct {
+/// On Windows the renderer draws into a native host's window with a
+/// context of its own: a Direct3D 11 swapchain composed into the window,
+/// which keeps alpha so a system backdrop shows through, or with
+/// `-Dgl=true` an OpenGL context, whose alpha Windows ignores.
+pub const draws_into_win32 = builtin.os.tag == .windows;
+const native = if (!draws_into_win32) struct {
     pub const Context = void;
-};
+} else if (options.opengl) @import("wgl.zig") else @import("composition.zig");
 
 /// The renderer contract, through sokol_gfx: draws zui frames with
 /// sokol_gl (shapes, images) and sokol_debugtext (text) into sokol_app's
@@ -34,12 +36,15 @@ pub const Renderer = struct {
     /// Triangles per rounded corner.
     corner_segments: u8 = 8,
     pipeline: sgl.Pipeline,
+    alpha_coverage_pipeline: sgl.Pipeline,
+    /// The surface keeps the alpha drawn, as a composed native window does.
+    composes_alpha: bool = false,
     /// Paint order breaks once a frame needs more layers than this; zui's
     /// commands then share the last layer.
     layer_overflows: u32 = 0,
     layer_scissors: [max_layers]?zui.Rect = undefined,
     /// The context of a `.win32` surface, which the renderer set up itself.
-    native: ?wgl.Context = null,
+    native: ?native.Context = null,
 
     /// Call after `sokol.gfx.setup`.
     pub fn init(text: *const Text) Renderer {
@@ -57,6 +62,10 @@ pub const Renderer = struct {
         sdtx.setup(debugtext_desc);
 
         var colors: [8]sg.ColorTargetState = @splat(.{});
+        // sokol_gl writes no alpha by default, so a window composed with its
+        // alpha (a native host's, over a system backdrop) would show the
+        // backdrop through every shape.
+        colors[0].write_mask = .RGBA;
         colors[0].blend = .{
             .enabled = true,
             .src_factor_rgb = .SRC_ALPHA,
@@ -64,25 +73,30 @@ pub const Renderer = struct {
             .src_factor_alpha = .ONE,
             .dst_factor_alpha = .ONE_MINUS_SRC_ALPHA,
         };
-        return .{ .text = text, .pipeline = sgl.makePipeline(.{ .colors = colors }) };
+        var coverage: [8]sg.ColorTargetState = @splat(.{});
+        coverage[0].write_mask = .A;
+        coverage[0].blend = .{ .enabled = true, .src_factor_alpha = .ONE, .dst_factor_alpha = .ONE, .op_alpha = .MAX };
+        return .{ .text = text, .pipeline = sgl.makePipeline(.{ .colors = colors }), .alpha_coverage_pipeline = sgl.makePipeline(.{ .colors = coverage }) };
     }
 
-    /// For a native host's window: makes its OpenGL context current on
-    /// this thread, sets sokol_gfx up on it, then does what `init` does.
-    /// `deinit` then also shuts sokol_gfx down.
+    /// For a native host's window: makes its graphics context, sets
+    /// sokol_gfx up on it, then does what `init` does. `deinit` then also
+    /// shuts sokol_gfx down.
     pub fn initForSurface(text: *const Text, surface: zui.Surface) !Renderer {
         if (!draws_into_win32 or surface != .win32) return error.UnsupportedSurface;
-        var context = try wgl.Context.init(surface.win32.hwnd);
+        var context = try native.Context.init(surface.win32.hwnd);
         errdefer context.deinit();
-        sg.setup(.{ .environment = wgl.Context.environment, .logger = .{ .func = sokol.log.func } });
+        sg.setup(.{ .environment = context.environment(), .logger = .{ .func = sokol.log.func } });
         if (!sg.isvalid()) return error.SokolGfxSetupFailed;
         var renderer: Renderer = .init(text);
         renderer.native = context;
+        renderer.composes_alpha = !options.opengl;
         return renderer;
     }
 
     pub fn deinit(self: *Renderer) void {
         sgl.destroyPipeline(self.pipeline);
+        sgl.destroyPipeline(self.alpha_coverage_pipeline);
         sdtx.shutdown();
         sgl.shutdown();
         if (comptime draws_into_win32) if (self.native) |*context| {
@@ -138,10 +152,12 @@ pub const Renderer = struct {
                 .rectangle => |rectangle| {
                     recorder.beginShapes();
                     fillRectangle(bounds, rectangle.corner_radius, rectangle.color, self.corner_segments);
+                    if (self.composes_alpha) self.coverAlpha(recorder.layer, fillRectangle, .{ bounds, rectangle.corner_radius, rectangle.color, self.corner_segments });
                 },
                 .border => |border| {
                     recorder.beginShapes();
                     strokeBorder(bounds, border.widths, border.corner_radius, border.color, self.corner_segments);
+                    if (self.composes_alpha) self.coverAlpha(recorder.layer, strokeBorder, .{ bounds, border.widths, border.corner_radius, border.color, self.corner_segments });
                 },
                 .text => |line| {
                     recorder.beginText();
@@ -162,16 +178,39 @@ pub const Renderer = struct {
             }
         }
 
-        const dpi_scale = params.scale * params.zoom;
-        for (self.layer_scissors[0 .. recorder.layer + 1], 0..) |scissor, layer| {
-            if (scissor) |rect| {
-                sg.applyScissorRectf(rect.x * dpi_scale, rect.y * dpi_scale, rect.width * dpi_scale, rect.height * dpi_scale, true);
-            } else {
-                sg.applyScissorRectf(0, 0, viewport[0] * dpi_scale, viewport[1] * dpi_scale, true);
-            }
+        const scissors = self.layer_scissors[0 .. recorder.layer + 1];
+        for (scissors, 0..) |scissor, layer| {
+            applyScissor(scissor, params);
             sgl.drawLayer(@intCast(layer));
             sdtx.drawLayer(@intCast(layer));
         }
+        if (self.composes_alpha) for (scissors, 0..) |scissor, layer| {
+            applyScissor(scissor, params);
+            sgl.drawLayer(alphaCoverageLayer(layer));
+        };
+    }
+
+    fn applyScissor(scissor: ?zui.Rect, params: zui.FrameParams) void {
+        const dpi_scale = params.scale * params.zoom;
+        const rect = scissor orelse zui.Rect{ .x = 0, .y = 0, .width = params.viewport[0], .height = params.viewport[1] };
+        sg.applyScissorRectf(rect.x * dpi_scale, rect.y * dpi_scale, rect.width * dpi_scale, rect.height * dpi_scale, true);
+    }
+
+    /// sokol_debugtext writes its font's alpha, 0 between the strokes of a
+    /// glyph, which would let a composed window's backdrop show through
+    /// each glyph's cell. So every shape is drawn again into the alpha
+    /// channel after all the text, keeping the greater alpha.
+    fn coverAlpha(self: *Renderer, layer: usize, comptime drawShape: anytype, arguments: anytype) void {
+        sgl.layer(alphaCoverageLayer(layer));
+        sgl.pushPipeline();
+        sgl.loadPipeline(self.alpha_coverage_pipeline);
+        @call(.auto, drawShape, arguments);
+        sgl.popPipeline();
+        sgl.layer(@intCast(layer));
+    }
+
+    fn alphaCoverageLayer(layer: usize) i32 {
+        return @intCast(max_layers + layer);
     }
 };
 

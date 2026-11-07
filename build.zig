@@ -89,14 +89,20 @@ pub fn build(b: *std.Build) void {
     b.step("fmt-check", "Fail if any Zig source is not formatted").dependOn(&b.addFmt(.{ .paths = formatted_paths, .check = true }).step);
 }
 
-/// Built with OpenGL on Windows, the renderer draws into a native host's
-/// window with a context of its own, made through opengl32 and gdi32.
+/// On Windows the renderer draws into a native host's window with a
+/// context of its own: OpenGL through opengl32 and gdi32, or Direct3D 11
+/// composed into the window through DirectComposition.
 fn addRendererOptions(b: *std.Build, module: *std.Build.Module, opengl: bool) void {
     const options = b.addOptions();
     options.addOption(bool, "opengl", opengl);
     module.addOptions("zui_sokol_options", options);
-    if (module.resolved_target.?.result.os.tag == .windows and opengl) {
+    if (module.resolved_target.?.result.os.tag != .windows) return;
+    if (opengl) {
         module.linkSystemLibrary("opengl32", .{});
         module.linkSystemLibrary("gdi32", .{});
+    } else {
+        module.addCSourceFile(.{ .file = b.path("src/composition.c") });
+        module.linkSystemLibrary("d3d11", .{});
+        module.linkSystemLibrary("dxgi", .{});
     }
 }

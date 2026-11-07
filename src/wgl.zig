@@ -66,7 +66,8 @@ extern "opengl32" fn wglMakeCurrent(hdc: ?HDC, context: ?HGLRC) callconv(.winapi
 extern "opengl32" fn wglGetProcAddress(name: [*:0]const u8) callconv(.winapi) ?*const anyopaque;
 
 /// The window's OpenGL 4.3 core context, current on the thread that made
-/// it, presenting with vsync.
+/// it, presenting with vsync. Windows composes its pixels as opaque, so a
+/// system backdrop behind the window does not show through.
 pub const Context = struct {
     hwnd: HWND,
     hdc: HDC,
@@ -118,7 +119,11 @@ pub const Context = struct {
         _ = ReleaseDC(self.hwnd, self.hdc);
     }
 
-    pub const environment: sg.Environment = .{ .defaults = .{ .color_format = .RGBA8, .depth_format = .DEPTH_STENCIL, .sample_count = 1 } };
+    const defaults: sg.EnvironmentDefaults = .{ .color_format = .RGBA8, .depth_format = .DEPTH_STENCIL, .sample_count = 1 };
+
+    pub fn environment(_: *const Context) sg.Environment {
+        return .{ .defaults = defaults };
+    }
 
     /// The window's default framebuffer, at the client area's size now.
     pub fn swapchain(self: *const Context) sg.Swapchain {
@@ -127,9 +132,9 @@ pub const Context = struct {
         return .{
             .width = @max(client.right - client.left, 1),
             .height = @max(client.bottom - client.top, 1),
-            .sample_count = environment.defaults.sample_count,
-            .color_format = environment.defaults.color_format,
-            .depth_format = environment.defaults.depth_format,
+            .sample_count = defaults.sample_count,
+            .color_format = defaults.color_format,
+            .depth_format = defaults.depth_format,
             .gl = .{ .framebuffer = 0 },
         };
     }

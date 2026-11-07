@@ -128,16 +128,20 @@ try renderer.zuiSubmit(.library, frame); // one swapchain pass, cleared to clear
 ui.release(frame);
 ```
 
-`zui_sokol.Renderer` implements zui's renderer contract. Its surface is
-`.library`, sokol_app's swapchain, and, built with `-Dgl=true` on Windows,
-also `.win32`: a native host's window, such as
-[zui-host](https://github.com/AaronJClausen/zui-host)'s, which the
-renderer draws into without sokol_app. There it makes the window's OpenGL
-4.3 context and sets sokol_gfx up itself, and presents with vsync:
+`zui_sokol.Renderer` implements zui's renderer contract. Its surfaces are
+`.library`, sokol_app's swapchain, and on Windows `.win32`: a native
+host's window, such as [zui-host](https://github.com/AaronJClausen/zui-host)'s,
+which the renderer draws into without sokol_app, setting sokol_gfx up on
+a context of its own and presenting with vsync. With D3D11 (the default)
+that is a swapchain DirectComposition composes into the window with its
+alpha, so where the frame draws nothing a system backdrop (Mica,
+Acrylic) shows; with `-Dgl=true` it is an OpenGL 4.3 context, whose alpha
+Windows ignores:
 
 ```zig
 var renderer: zui_sokol.Renderer = try .initForSurface(&text, host.zuiSurface(.main));
 defer renderer.deinit(); // also shuts sokol_gfx down
+renderer.clear_color = .{ .r = 0, .g = 0, .b = 0, .a = 0 }; // let the backdrop show
 try renderer.zuiSubmit(host.zuiSurface(.main), frame);
 ```
 
