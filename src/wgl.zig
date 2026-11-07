@@ -92,7 +92,7 @@ pub const Context = struct {
         const legacy = wglCreateContext(hdc) orelse return error.NoOpenGlContext;
         defer _ = wglDeleteContext(legacy);
         if (wglMakeCurrent(hdc, legacy) == 0) return error.NoOpenGlContext;
-        const create: CreateContextAttribs = @ptrCast(wglGetProcAddress("wglCreateContextAttribsARB") orelse return error.NoCoreProfile);
+        const create: CreateContextAttribs = @ptrCast(@alignCast(wglGetProcAddress("wglCreateContextAttribsARB") orelse return error.NoCoreProfile));
         const attributes = [_]c_int{
             WGL_CONTEXT_MAJOR_VERSION_ARB, 4,
             WGL_CONTEXT_MINOR_VERSION_ARB, 3,
@@ -106,7 +106,7 @@ pub const Context = struct {
             return error.NoOpenGlContext;
         }
         if (wglGetProcAddress("wglSwapIntervalEXT")) |address| {
-            const swap_interval: SwapInterval = @ptrCast(address);
+            const swap_interval: SwapInterval = @ptrCast(@alignCast(address));
             _ = swap_interval(1);
         }
         return .{ .hwnd = hwnd, .hdc = hdc, .context = context };

@@ -59,4 +59,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libx11-dev libxi-dev libxcursor-dev libgl1-mesa-dev libpulse-dev
       - run: zig build test
       - run: zig build check
+      - name: Compile the renderer for a native host's win32 window, with OpenGL
+        if: runner.os == 'Windows'
+        run: zig build check -Dgl=true
       - run: zig build test-tour
