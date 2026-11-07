@@ -52,6 +52,7 @@ pub const App = struct {
     perf: Perf = .{},
     environment_changes: kit.EnvironmentQueue = .{},
     wakes: std.atomic.Value(u32) = .init(0),
+    host_waker: ?zui.Waker = null,
     started_at: zui.Instant,
 
     zoom: f32 = 1,
@@ -86,11 +87,13 @@ pub const App = struct {
         return .{ .context = app, .wakeFn = countWake };
     }
 
-    /// sokol_app polls at every display refresh, so a wake only needs
-    /// counting: the host's next poll of `nextFrame` sees the source.
+    /// Counts each wake, and passes it on to a host that sleeps between
+    /// frames. sokol_app polls at every display refresh, so under it
+    /// counting is enough: its next poll of `nextFrame` sees the source.
     fn countWake(context: *anyopaque) void {
         const app: *App = @ptrCast(@alignCast(context));
         _ = app.wakes.fetchAdd(1, .monotonic);
+        if (app.host_waker) |host_waker| host_waker.wake();
     }
 
     fn shell(app: *App, ui: *const Ui) Shell {

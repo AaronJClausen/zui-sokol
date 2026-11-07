@@ -22,6 +22,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = backend_imports,
     });
+    addRendererOptions(b, backend_module, force_opengl);
 
     const unit_tests = b.addTest(.{ .root_module = backend_module });
     b.step("test", "Run the backend's unit tests").dependOn(&b.addRunArtifact(unit_tests).step);
@@ -37,6 +38,7 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{ .root_source_file = b.path("examples/demo.zig"), .target = target, .optimize = optimize, .imports = demo_imports }),
     });
     if (target.result.os.tag == .windows) demo.subsystem = .windows;
+    _ = b.addModule("zui_sokol_tour", .{ .root_source_file = b.path("examples/tour_app.zig"), .target = target, .optimize = optimize, .imports = demo_imports });
 
     const tour_tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("examples/tour_test.zig"),
@@ -67,6 +69,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "sokol", .module = gl_sokol_dependency.module("sokol") },
         },
     });
+    addRendererOptions(b, gl_backend_module, true);
     const conformance = b.addExecutable(.{
         .name = "zui-sokol-conformance",
         .root_module = b.createModule(.{
@@ -79,11 +82,21 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    // sokol loads OpenGL's functions itself on Windows, without linking it.
-    if (target.result.os.tag == .windows) conformance.root_module.linkSystemLibrary("opengl32", .{});
     b.step("conformance", "Run zui's renderer suite against the renderer, in a window, with OpenGL").dependOn(&b.addRunArtifact(conformance).step);
 
     const formatted_paths: []const []const u8 = &.{ "build.zig", "build.zig.zon", "src", "examples" };
     b.step("fmt", "Format all Zig sources").dependOn(&b.addFmt(.{ .paths = formatted_paths }).step);
     b.step("fmt-check", "Fail if any Zig source is not formatted").dependOn(&b.addFmt(.{ .paths = formatted_paths, .check = true }).step);
+}
+
+/// Built with OpenGL on Windows, the renderer draws into a native host's
+/// window with a context of its own, made through opengl32 and gdi32.
+fn addRendererOptions(b: *std.Build, module: *std.Build.Module, opengl: bool) void {
+    const options = b.addOptions();
+    options.addOption(bool, "opengl", opengl);
+    module.addOptions("zui_sokol_options", options);
+    if (module.resolved_target.?.result.os.tag == .windows and opengl) {
+        module.linkSystemLibrary("opengl32", .{});
+        module.linkSystemLibrary("gdi32", .{});
+    }
 }

@@ -129,7 +129,20 @@ ui.release(frame);
 ```
 
 `zui_sokol.Renderer` implements zui's renderer contract. Its surface is
-`.library`, sokol_app's swapchain. `zui_sokol.config(...)` builds the
+`.library`, sokol_app's swapchain, and, built with `-Dgl=true` on Windows,
+also `.win32`: a native host's window, such as
+[zui-host](https://github.com/AaronJClausen/zui-host)'s, which the
+renderer draws into without sokol_app. There it makes the window's OpenGL
+4.3 context and sets sokol_gfx up itself, and presents with vsync:
+
+```zig
+var renderer: zui_sokol.Renderer = try .initForSurface(&text, host.zuiSurface(.main));
+defer renderer.deinit(); // also shuts sokol_gfx down
+try renderer.zuiSubmit(host.zuiSurface(.main), frame);
+```
+
+zui-host runs the tour this way: `zui_sokol_tour` exports the tour's
+application, so another loop can run it unchanged. `zui_sokol.config(...)` builds the
 `Config` from its declarations: `Text` is `zui_sokol.Text`, `ImageHandle`
 is `zui_sokol.Image`, and there are no optional commands and no
 `CustomData`, so the renderer's `switch` over the commands names exactly

@@ -4,16 +4,26 @@ const sokol = @import("sokol");
 const sg = sokol.gfx;
 const sgl = sokol.gl;
 const sdtx = sokol.debugtext;
+const builtin = @import("builtin");
+const options = @import("zui_sokol_options");
 const Text = @import("root.zig").Text;
 const Image = @import("root.zig").Image;
 
+/// A `win32` surface needs an OpenGL context of the renderer's own, so it
+/// is drawn into only when sokol_gfx is built with OpenGL (`-Dgl=true`).
+pub const draws_into_win32 = builtin.os.tag == .windows and options.opengl;
+const wgl = if (draws_into_win32) @import("wgl.zig") else struct {
+    pub const Context = void;
+};
+
 /// The renderer contract, through sokol_gfx: draws zui frames with
 /// sokol_gl (shapes, images) and sokol_debugtext (text) into sokol_app's
-/// swapchain, its `.library` surface. Both record into numbered layers that
+/// swapchain, its `.library` surface, or, built with OpenGL on Windows,
+/// into a native host's `.win32` window. Both record into numbered layers that
 /// are replayed in order, so shapes and text interleave in zui's paint
 /// order, and each layer is drawn under its own scissor rectangle.
 pub const Renderer = struct {
-    pub const zui_surfaces: zui.SurfaceKinds = .initOne(.library);
+    pub const zui_surfaces: zui.SurfaceKinds = if (draws_into_win32) .initMany(&.{ .library, .win32 }) else .initOne(.library);
     pub const ImageHandle = Image;
 
     const max_layers = 1024;
@@ -28,6 +38,8 @@ pub const Renderer = struct {
     /// commands then share the last layer.
     layer_overflows: u32 = 0,
     layer_scissors: [max_layers]?zui.Rect = undefined,
+    /// The context of a `.win32` surface, which the renderer set up itself.
+    native: ?wgl.Context = null,
 
     /// Call after `sokol.gfx.setup`.
     pub fn init(text: *const Text) Renderer {
@@ -55,10 +67,28 @@ pub const Renderer = struct {
         return .{ .text = text, .pipeline = sgl.makePipeline(.{ .colors = colors }) };
     }
 
+    /// For a native host's window: makes its OpenGL context current on
+    /// this thread, sets sokol_gfx up on it, then does what `init` does.
+    /// `deinit` then also shuts sokol_gfx down.
+    pub fn initForSurface(text: *const Text, surface: zui.Surface) !Renderer {
+        if (!draws_into_win32 or surface != .win32) return error.UnsupportedSurface;
+        var context = try wgl.Context.init(surface.win32.hwnd);
+        errdefer context.deinit();
+        sg.setup(.{ .environment = wgl.Context.environment, .logger = .{ .func = sokol.log.func } });
+        if (!sg.isvalid()) return error.SokolGfxSetupFailed;
+        var renderer: Renderer = .init(text);
+        renderer.native = context;
+        return renderer;
+    }
+
     pub fn deinit(self: *Renderer) void {
         sgl.destroyPipeline(self.pipeline);
         sdtx.shutdown();
         sgl.shutdown();
+        if (comptime draws_into_win32) if (self.native) |*context| {
+            sg.shutdown();
+            context.deinit();
+        };
     }
 
     /// Draws `frame` in one swapchain pass, cleared to `clear_color`, and
@@ -70,7 +100,11 @@ pub const Renderer = struct {
     /// ui.release(frame);
     /// ```
     pub fn zuiSubmit(self: *Renderer, surface: zui.Surface, frame: anytype) error{UnsupportedSurface}!void {
-        if (surface != .library) return error.UnsupportedSurface;
+        const swapchain = switch (surface) {
+            .library => sokol.glue.swapchain(),
+            .win32 => if (comptime !draws_into_win32) return error.UnsupportedSurface else if (self.native) |*context| context.swapchain() else return error.UnsupportedSurface,
+            else => return error.UnsupportedSurface,
+        };
         var action: sg.PassAction = .{};
         action.colors[0] = .{ .load_action = .CLEAR, .clear_value = .{
             .r = @as(f32, @floatFromInt(self.clear_color.r)) / 255,
@@ -78,10 +112,11 @@ pub const Renderer = struct {
             .b = @as(f32, @floatFromInt(self.clear_color.b)) / 255,
             .a = @as(f32, @floatFromInt(self.clear_color.a)) / 255,
         } };
-        sg.beginPass(.{ .action = action, .swapchain = sokol.glue.swapchain() });
+        sg.beginPass(.{ .action = action, .swapchain = swapchain });
         self.draw(frame.commands(), frame.params);
         sg.endPass();
         sg.commit();
+        if (comptime draws_into_win32) if (surface == .win32) self.native.?.present();
     }
 
     /// `params` are the frame record's: its viewport and the physical
