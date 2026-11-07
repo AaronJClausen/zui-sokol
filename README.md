@@ -26,6 +26,16 @@ zig build demo -Dgl=true         # force OpenGL instead of D3D11 or Metal
 The demo runs `examples/showcase.zig`, the same UI as the zui-terminal
 demo, so the two renderers can be compared.
 
+## Conformance
+
+`zig build conformance` runs zui's renderer suite
+(`zui_testing.expectRendererConforms`) against the renderer, in the first
+frame of a sokol_app window: `src/conformance.zig` reads each frame back
+with `glReadPixels` before the window presents it, so the suite checks
+every clip and fill by its pixels. sokol_gfx cannot read a frame back, so
+the suite always renders with OpenGL, whatever `-Dgl` says. CI runs it on
+Linux under `xvfb-run`, and it passes on Windows.
+
 ## Developing against a local zui
 
 `build.zig.zon` pins zui to a commit. To build against a zui working copy

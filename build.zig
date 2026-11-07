@@ -48,6 +48,36 @@ pub fn build(b: *std.Build) void {
 
     b.step("check", "Compile the backend and the demo without producing output").dependOn(&demo.step);
 
+    // The renderer suite reads frames back with glReadPixels, so it always
+    // renders with OpenGL, and needs a window: on Linux CI, under Xvfb.
+    const gl_sokol_dependency = b.dependency("sokol", .{ .target = target, .optimize = optimize, .gl = true });
+    const gl_backend_module = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "zui", .module = zui_module },
+            .{ .name = "zui_widgets", .module = zui_widgets_module },
+            .{ .name = "zui_reflect", .module = zui_dependency.module("zui_reflect") },
+            .{ .name = "sokol", .module = gl_sokol_dependency.module("sokol") },
+        },
+    });
+    const conformance = b.addExecutable(.{
+        .name = "zui-sokol-conformance",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/conformance.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zui_sokol", .module = gl_backend_module },
+                .{ .name = "zui_testing", .module = zui_dependency.module("zui_testing") },
+            },
+        }),
+    });
+    // sokol loads OpenGL's functions itself on Windows, without linking it.
+    if (target.result.os.tag == .windows) conformance.root_module.linkSystemLibrary("opengl32", .{});
+    b.step("conformance", "Run zui's renderer suite against the renderer, in a window, with OpenGL").dependOn(&b.addRunArtifact(conformance).step);
+
     const formatted_paths: []const []const u8 = &.{ "build.zig", "build.zig.zon", "src", "examples" };
     b.step("fmt", "Format all Zig sources").dependOn(&b.addFmt(.{ .paths = formatted_paths }).step);
     b.step("fmt-check", "Fail if any Zig source is not formatted").dependOn(&b.addFmt(.{ .paths = formatted_paths, .check = true }).step);
