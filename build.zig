@@ -26,20 +26,25 @@ pub fn build(b: *std.Build) void {
     const unit_tests = b.addTest(.{ .root_module = backend_module });
     b.step("test", "Run the backend's unit tests").dependOn(&b.addRunArtifact(unit_tests).step);
 
+    const demo_imports: []const std.Build.Module.Import = &.{
+        .{ .name = "zui_sokol", .module = backend_module },
+        .{ .name = "zui", .module = zui_module },
+        .{ .name = "zui_widgets", .module = zui_widgets_module },
+        .{ .name = "zui_async", .module = zui_dependency.module("zui_async") },
+    };
     const demo = b.addExecutable(.{
         .name = "zui-sokol-demo",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("examples/demo.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "zui_sokol", .module = backend_module },
-                .{ .name = "zui", .module = zui_module },
-                .{ .name = "zui_widgets", .module = zui_widgets_module },
-            },
-        }),
+        .root_module = b.createModule(.{ .root_source_file = b.path("examples/demo.zig"), .target = target, .optimize = optimize, .imports = demo_imports }),
     });
     if (target.result.os.tag == .windows) demo.subsystem = .windows;
+
+    const tour_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("examples/tour_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = demo_imports,
+    }) });
+    b.step("test-tour", "Declare every screen of the demo headlessly; fail if one exceeds its limits or does not fit the default window").dependOn(&b.addRunArtifact(tour_tests).step);
     b.installArtifact(demo);
 
     const run_demo = b.addRunArtifact(demo);
