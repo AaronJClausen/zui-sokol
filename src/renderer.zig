@@ -7,27 +7,22 @@ const sdtx = sokol.debugtext;
 const Text = @import("root.zig").Text;
 const Image = @import("root.zig").Image;
 
-/// Hooks for payloads the renderer cannot draw on its own. They run while
-/// sokol_gl is recording, so they draw with `sokol.gl` calls.
-pub fn RenderOptions(comptime Command: type) type {
-    const Payload = @FieldType(Command, "payload");
-    return struct {
-        /// Required when `Config.CustomData` is not void.
-        draw_custom: ?*const fn (data: @FieldType(Payload, "custom"), bounds: zui.Rect) void = null,
-        /// Required when `Config.ImageHandle` is not `zui_sokol.Image`.
-        draw_image: ?*const fn (handle: @FieldType(@FieldType(Payload, "image"), "handle"), bounds: zui.Rect) void = null,
-        /// Triangles per rounded corner.
-        corner_segments: u8 = 8,
-    };
-}
-
-/// Draws zui frames with sokol_gl (shapes, images) and sokol_debugtext
-/// (text). Both record into numbered layers that are replayed in order, so
-/// shapes and text interleave in zui's paint order, and each layer is
-/// drawn under its own scissor rectangle.
+/// The renderer contract, through sokol_gfx: draws zui frames with
+/// sokol_gl (shapes, images) and sokol_debugtext (text) into sokol_app's
+/// swapchain, its `.library` surface. Both record into numbered layers that
+/// are replayed in order, so shapes and text interleave in zui's paint
+/// order, and each layer is drawn under its own scissor rectangle.
 pub const Renderer = struct {
+    pub const zui_surfaces: zui.SurfaceKinds = .initOne(.library);
+    pub const ImageHandle = Image;
+
     const max_layers = 1024;
 
+    text: *const Text,
+    /// What each frame's pass clears to before drawing.
+    clear_color: zui.Color = .black,
+    /// Triangles per rounded corner.
+    corner_segments: u8 = 8,
     pipeline: sgl.Pipeline,
     /// Paint order breaks once a frame needs more layers than this; zui's
     /// commands then share the last layer.
@@ -35,7 +30,7 @@ pub const Renderer = struct {
     layer_scissors: [max_layers]?zui.Rect = undefined,
 
     /// Call after `sokol.gfx.setup`.
-    pub fn init() Renderer {
+    pub fn init(text: *const Text) Renderer {
         sgl.setup(.{ .max_vertices = 1 << 18, .max_commands = 1 << 14, .logger = .{ .func = sokol.log.func } });
         var debugtext_desc: sdtx.Desc = .{
             .context = .{ .char_buf_size = 1 << 16, .max_commands = 1 << 14 },
@@ -57,7 +52,7 @@ pub const Renderer = struct {
             .src_factor_alpha = .ONE,
             .dst_factor_alpha = .ONE_MINUS_SRC_ALPHA,
         };
-        return .{ .pipeline = sgl.makePipeline(.{ .colors = colors }) };
+        return .{ .text = text, .pipeline = sgl.makePipeline(.{ .colors = colors }) };
     }
 
     pub fn deinit(self: *Renderer) void {
@@ -66,20 +61,33 @@ pub const Renderer = struct {
         sgl.shutdown();
     }
 
-    /// Draws one frame's commands. Call inside a `sokol.gfx` swapchain pass.
-    /// `params` are the frame record's: its viewport and the physical pixels
-    /// per layout unit (`scale × zoom`).
+    /// Draws `frame` in one swapchain pass, cleared to `clear_color`, and
+    /// commits it.
     ///
     /// ```zig
-    /// sg.beginPass(.{ .action = clear_action, .swapchain = sokol.glue.swapchain() });
-    /// renderer.draw(Ui.RenderCommand, &text, frame.commands(), record.params, .{});
-    /// sg.endPass();
-    /// sg.commit();
+    /// const frame = ui.endFrame();
+    /// try renderer.zuiSubmit(.library, frame);
+    /// ui.release(frame);
     /// ```
-    pub fn draw(self: *Renderer, comptime Command: type, text: *const Text, commands: []const Command, params: zui.FrameParams, options: RenderOptions(Command)) void {
+    pub fn zuiSubmit(self: *Renderer, surface: zui.Surface, frame: anytype) error{UnsupportedSurface}!void {
+        if (surface != .library) return error.UnsupportedSurface;
+        var action: sg.PassAction = .{};
+        action.colors[0] = .{ .load_action = .CLEAR, .clear_value = .{
+            .r = @as(f32, @floatFromInt(self.clear_color.r)) / 255,
+            .g = @as(f32, @floatFromInt(self.clear_color.g)) / 255,
+            .b = @as(f32, @floatFromInt(self.clear_color.b)) / 255,
+            .a = @as(f32, @floatFromInt(self.clear_color.a)) / 255,
+        } };
+        sg.beginPass(.{ .action = action, .swapchain = sokol.glue.swapchain() });
+        self.draw(frame.commands(), frame.params);
+        sg.endPass();
+        sg.commit();
+    }
+
+    /// `params` are the frame record's: its viewport and the physical
+    /// pixels per layout unit (`scale × zoom`).
+    fn draw(self: *Renderer, commands: anytype, params: zui.FrameParams) void {
         const viewport = params.viewport;
-        const Payload = @FieldType(Command, "payload");
-        const ImageHandle = @FieldType(@FieldType(Payload, "image"), "handle");
 
         sgl.defaults();
         sgl.loadPipeline(self.pipeline);
@@ -94,27 +102,19 @@ pub const Renderer = struct {
             switch (command.payload) {
                 .rectangle => |rectangle| {
                     recorder.beginShapes();
-                    fillRectangle(bounds, rectangle.corner_radius, rectangle.color, options.corner_segments);
+                    fillRectangle(bounds, rectangle.corner_radius, rectangle.color, self.corner_segments);
                 },
                 .border => |border| {
                     recorder.beginShapes();
-                    strokeBorder(bounds, border.widths, border.corner_radius, border.color, options.corner_segments);
+                    strokeBorder(bounds, border.widths, border.corner_radius, border.color, self.corner_segments);
                 },
                 .text => |line| {
                     recorder.beginText();
-                    drawText(text, line.content, bounds, line.style, viewport);
+                    drawText(self.text, line.content, bounds, line.style, viewport);
                 },
                 .image => |image| {
                     recorder.beginShapes();
-                    if (ImageHandle == Image) {
-                        drawImage(image.handle, bounds);
-                    } else if (options.draw_image) |draw_image| {
-                        draw_image(image.handle, bounds);
-                    }
-                },
-                .custom => |data| {
-                    recorder.beginShapes();
-                    if (options.draw_custom) |draw_custom| draw_custom(data, bounds);
+                    drawImage(image.handle, bounds);
                 },
                 .clip_begin => |clip| {
                     clips.push(clip);

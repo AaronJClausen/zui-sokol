@@ -8,7 +8,6 @@ pub const zui_reflect = @import("zui_reflect");
 pub const sokol = @import("sokol");
 
 pub const Renderer = @import("renderer.zig").Renderer;
-pub const RenderOptions = @import("renderer.zig").RenderOptions;
 pub const InputCollector = @import("input.zig").InputCollector;
 
 /// A texture as sokol_gl samples it.
@@ -17,13 +16,18 @@ pub const Image = struct {
     sampler: sokol.gfx.Sampler,
 };
 
-/// A `zui.Config` whose text is measured by `Text` and whose images are
-/// `Image`s; override any field:
+/// A `zui.Config` for `Renderer`: text measured by `Text`, images that are
+/// `Image`s, and exactly the commands `Renderer` draws. Override any other
+/// field:
 /// `zui.Context(zui_sokol.config(.{ .limits = .{ .max_elements = 8192 } }))`.
 pub fn config(overrides: zui.Config) zui.Config {
+    comptime zui.checkRenderer(Renderer);
     var result = overrides;
     result.Text = Text;
-    result.ImageHandle = Image;
+    result.commands = .initEmpty();
+    result.ImageHandle = Renderer.ImageHandle;
+    result.CustomData = void;
+    result.MaterialHandle = void;
     return result;
 }
 
@@ -94,10 +98,24 @@ test "measurement is additive, with letter spacing after every glyph" {
 }
 
 test "config makes images sokol textures and text debugtext's" {
-    const derived = config(.{ .limits = .{ .max_elements = 128 } });
+    const derived = config(.{ .limits = .{ .max_elements = 128 }, .CustomData = u32 });
     try std.testing.expect(derived.ImageHandle == Image);
     try std.testing.expect(derived.Text == Text);
+    try std.testing.expect(derived.CustomData == void);
     try std.testing.expectEqual(@as(u32, 128), derived.limits.max_elements);
+}
+
+test "the renderer draws exactly the base commands and images, into sokol_app's swapchain" {
+    const Ui = zui.Context(config(.{ .limits = .{ .max_elements = 8 } }));
+    try std.testing.expectEqual(6, @typeInfo(Ui.RenderCommand.Payload).@"union".fields.len);
+    var text: Text = .{};
+    var ui = try Ui.init(std.testing.allocator, std.testing.io, &text);
+    defer ui.deinit(std.testing.allocator);
+    ui.beginFrame(&.{ .params = .{ .now = .zero, .viewport = .{ 100, 100 } } });
+    const frame = ui.endFrame();
+    defer ui.release(frame);
+    var renderer: Renderer = .{ .text = &text, .pipeline = .{} };
+    try std.testing.expectError(error.UnsupportedSurface, renderer.zuiSubmit(.{ .offscreen = .{ .size = .{ 100, 100 } } }, frame));
 }
 
 test "every cursor maps to one of sokol's" {

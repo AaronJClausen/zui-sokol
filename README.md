@@ -4,8 +4,9 @@ A [sokol](https://github.com/floooh/sokol) backend for
 [zui](https://github.com/AaronJClausen/zui), through
 [sokol-zig](https://github.com/floooh/sokol-zig): it collects sokol_app
 events into zui's frame records, measures text through zui's text
-contract, and draws zui's render commands with sokol_gl and
-sokol_debugtext, on D3D11 (Windows), Metal (macOS) or OpenGL (Linux).
+contract, and draws zui's frames as a renderer (zui's renderer contract)
+with sokol_gl and sokol_debugtext, on D3D11 (Windows), Metal (macOS) or
+OpenGL (Linux).
 
 ## Requirements
 
@@ -76,7 +77,8 @@ const zui = zui_sokol.zui;
 const Ui = zui.Context(zui_sokol.config(.{}));
 
 // in sokol_app's init callback, after sg.setup:
-renderer = .init();
+renderer = .init(&text);
+renderer.clear_color = background;
 
 // in the event callback:
 input.handleEvent(event, sapp.dpiScale(), now());
@@ -87,12 +89,16 @@ ui.beginFrame(&.{ .params = params, .events = input.take() });
 // ... declare your UI ...
 const frame = ui.endFrame();
 host_requests.apply(frame.requests());
-sg.beginPass(.{ .action = clear, .swapchain = sokol.glue.swapchain() });
-renderer.draw(Ui.RenderCommand, &text, frame.commands(), params, .{});
-sg.endPass();
-sg.commit();
+try renderer.zuiSubmit(.library, frame); // one swapchain pass, cleared to clear_color
 ui.release(frame);
 ```
+
+`zui_sokol.Renderer` implements zui's renderer contract. Its surface is
+`.library`, sokol_app's swapchain. `zui_sokol.config(...)` builds the
+`Config` from its declarations: `Text` is `zui_sokol.Text`, `ImageHandle`
+is `zui_sokol.Image`, and there are no optional commands and no
+`CustomData`, so the renderer's `switch` over the commands names exactly
+the base commands and `image`.
 
 ## License
 

@@ -20,7 +20,6 @@ const State = struct {
     showcase: Showcase = .{ .title = "zui + sokol", .widgets = .{ .theme = .{} } },
     /// The frame drawn at every display refresh until zui needs a new one.
     shown_frame: ?*const Ui.Frame = null,
-    shown_params: zui.FrameParams = .{ .now = .zero, .viewport = .{ 0, 0 } },
     next_frame: zui.NextFrame = .immediately,
     /// Quit after this many frames, for smoke tests.
     frame_limit: ?u64 = null,
@@ -38,8 +37,9 @@ const State = struct {
     /// sokol_app draws at every display refresh, but zui declares a frame
     /// only when one is due; the rest redraw the frame already shown.
     fn frameDue(self: *const State, params: zui.FrameParams) bool {
-        if (self.shown_frame == null or self.input.event_count != 0) return true;
-        if (!std.meta.eql(params.viewport, self.shown_params.viewport) or params.scale != self.shown_params.scale) return true;
+        const shown_frame = self.shown_frame orelse return true;
+        if (self.input.event_count != 0) return true;
+        if (!std.meta.eql(params.viewport, shown_frame.params.viewport) or params.scale != shown_frame.params.scale) return true;
         return switch (self.next_frame) {
             .immediately => true,
             .at => |deadline| !params.now.isBefore(deadline),
@@ -51,7 +51,8 @@ const State = struct {
 fn onInit(userdata: ?*anyopaque) callconv(.c) void {
     const state: *State = .from(userdata);
     sg.setup(.{ .environment = sglue.environment(), .logger = .{ .func = sokol.log.func } });
-    state.renderer = .init();
+    state.renderer = .init(&state.text);
+    state.renderer.clear_color = state.showcase.palette.background;
 }
 
 fn onFrame(userdata: ?*anyopaque) callconv(.c) void {
@@ -69,24 +70,12 @@ fn onFrame(userdata: ?*anyopaque) callconv(.c) void {
         const frame = state.ui.endFrame();
         if (state.shown_frame) |previous| state.ui.release(previous);
         state.shown_frame = frame;
-        state.shown_params = params;
         state.host_requests.apply(frame.requests());
         state.next_frame = state.ui.nextFrame();
         state.frames_declared += 1;
     }
 
-    const background = state.showcase.palette.background;
-    var clear: sg.PassAction = .{};
-    clear.colors[0] = .{ .load_action = .CLEAR, .clear_value = .{
-        .r = @as(f32, @floatFromInt(background.r)) / 255,
-        .g = @as(f32, @floatFromInt(background.g)) / 255,
-        .b = @as(f32, @floatFromInt(background.b)) / 255,
-        .a = 1,
-    } };
-    sg.beginPass(.{ .action = clear, .swapchain = sglue.swapchain() });
-    state.renderer.draw(Ui.RenderCommand, &state.text, state.shown_frame.?.commands(), state.shown_params, .{});
-    sg.endPass();
-    sg.commit();
+    state.renderer.zuiSubmit(.library, state.shown_frame.?) catch unreachable;
 
     state.frames_drawn += 1;
     if (state.frame_limit) |limit| if (state.frames_drawn >= limit) sapp.requestQuit();
