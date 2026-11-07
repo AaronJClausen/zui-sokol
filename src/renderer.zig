@@ -4,7 +4,7 @@ const sokol = @import("sokol");
 const sg = sokol.gfx;
 const sgl = sokol.gl;
 const sdtx = sokol.debugtext;
-const Platform = @import("root.zig").Platform;
+const Text = @import("root.zig").Text;
 const Image = @import("root.zig").Image;
 
 /// Hooks for payloads the renderer cannot draw on its own. They run while
@@ -15,7 +15,7 @@ pub fn RenderOptions(comptime Command: type) type {
         /// Required when `Config.CustomData` is not void.
         draw_custom: ?*const fn (data: @FieldType(Payload, "custom"), bounds: zui.Rect) void = null,
         /// Required when `Config.ImageHandle` is not `zui_sokol.Image`.
-        draw_image: ?*const fn (handle: @FieldType(Payload, "image"), bounds: zui.Rect) void = null,
+        draw_image: ?*const fn (handle: @FieldType(@FieldType(Payload, "image"), "handle"), bounds: zui.Rect) void = null,
         /// Triangles per rounded corner.
         corner_segments: u8 = 8,
     };
@@ -67,17 +67,19 @@ pub const Renderer = struct {
     }
 
     /// Draws one frame's commands. Call inside a `sokol.gfx` swapchain pass.
-    /// `viewport` is the window's size in layout units.
+    /// `params` are the frame record's: its viewport and the physical pixels
+    /// per layout unit (`scale × zoom`).
     ///
     /// ```zig
     /// sg.beginPass(.{ .action = clear_action, .swapchain = sokol.glue.swapchain() });
-    /// renderer.draw(Ui.RenderCommand, &platform, frame.commands(), viewport, .{});
+    /// renderer.draw(Ui.RenderCommand, &text, frame.commands(), record.params, .{});
     /// sg.endPass();
     /// sg.commit();
     /// ```
-    pub fn draw(self: *Renderer, comptime Command: type, platform: *const Platform, commands: []const Command, viewport: [2]f32, options: RenderOptions(Command)) void {
+    pub fn draw(self: *Renderer, comptime Command: type, text: *const Text, commands: []const Command, params: zui.FrameParams, options: RenderOptions(Command)) void {
+        const viewport = params.viewport;
         const Payload = @FieldType(Command, "payload");
-        const ImageHandle = @FieldType(Payload, "image");
+        const ImageHandle = @FieldType(@FieldType(Payload, "image"), "handle");
 
         sgl.defaults();
         sgl.loadPipeline(self.pipeline);
@@ -98,16 +100,16 @@ pub const Renderer = struct {
                     recorder.beginShapes();
                     strokeBorder(bounds, border.widths, border.corner_radius, border.color, options.corner_segments);
                 },
-                .text => |text| {
+                .text => |line| {
                     recorder.beginText();
-                    drawText(platform, text.content, bounds, text.style.font, text.style.size, text.style.color, viewport);
+                    drawText(text, line.content, bounds, line.style, viewport);
                 },
-                .image => |handle| {
+                .image => |image| {
                     recorder.beginShapes();
                     if (ImageHandle == Image) {
-                        drawImage(handle, bounds);
+                        drawImage(image.handle, bounds);
                     } else if (options.draw_image) |draw_image| {
-                        draw_image(handle, bounds);
+                        draw_image(image.handle, bounds);
                     }
                 },
                 .custom => |data| {
@@ -125,7 +127,7 @@ pub const Renderer = struct {
             }
         }
 
-        const dpi_scale = platform.dpi_scale;
+        const dpi_scale = params.scale * params.zoom;
         for (self.layer_scissors[0 .. recorder.layer + 1], 0..) |scissor, layer| {
             if (scissor) |rect| {
                 sg.applyScissorRectf(rect.x * dpi_scale, rect.y * dpi_scale, rect.width * dpi_scale, rect.height * dpi_scale, true);
@@ -306,17 +308,22 @@ const Outline = struct {
 /// sokol_debugtext lays glyphs on a grid of 8×8 canvas pixels; sizing the
 /// canvas per command scales that grid to the glyph size. Glyph size is
 /// baked into vertices as they are emitted, so one context serves every
-/// text size in a frame.
-fn drawText(platform: *const Platform, content: []const u8, bounds: zui.Rect, font: u16, size: f32, color: zui.Color, viewport: [2]f32) void {
-    const glyph_size = platform.glyphSize(size);
+/// text size in a frame. With letter spacing, each glyph is placed on its
+/// own, since the grid advances by whole glyphs.
+fn drawText(text: *const Text, content: []const u8, bounds: zui.Rect, style: anytype, viewport: [2]f32) void {
+    const glyph_size = text.glyphSize(style.size);
     if (glyph_size <= 0) return;
     const canvas_scale = 8 / glyph_size;
     sdtx.canvas(viewport[0] * canvas_scale, viewport[1] * canvas_scale);
-    sdtx.font(@min(font, 5));
-    sdtx.color4b(color.r, color.g, color.b, color.a);
-    sdtx.pos(bounds.x / glyph_size, (bounds.y + (bounds.height - glyph_size) / 2) / glyph_size);
+    sdtx.font(@min(style.font, 5));
+    sdtx.color4b(style.color.r, style.color.g, style.color.b, style.color.a);
+    const row = (bounds.y + (bounds.height - glyph_size) / 2) / glyph_size;
+    const glyph_pitch = (glyph_size + style.letter_spacing) / glyph_size;
+    sdtx.pos(bounds.x / glyph_size, row);
+    var glyph_index: f32 = 0;
     var codepoints = (std.unicode.Utf8View.init(content) catch return).iterator();
-    while (codepoints.nextCodepoint()) |codepoint| {
+    while (codepoints.nextCodepoint()) |codepoint| : (glyph_index += 1) {
+        if (style.letter_spacing != 0) sdtx.pos(bounds.x / glyph_size + glyph_index * glyph_pitch, row);
         const is_printable_ascii = codepoint >= 0x20 and codepoint < 0x7F;
         sdtx.putc(if (is_printable_ascii) @intCast(codepoint) else '?');
     }

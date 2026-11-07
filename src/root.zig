@@ -17,36 +17,59 @@ pub const Image = struct {
     sampler: sokol.gfx.Sampler,
 };
 
-/// A `zui.Config` whose images are `Image`s; override any field:
-/// `zui.Context(zui_sokol.config(.{ .max_elements = 8192 }), zui_sokol.Platform)`.
+/// A `zui.Config` whose text is measured by `Text` and whose images are
+/// `Image`s; override any field:
+/// `zui.Context(zui_sokol.config(.{ .limits = .{ .max_elements = 8192 } }))`.
 pub fn config(overrides: zui.Config) zui.Config {
     var result = overrides;
+    result.Text = Text;
     result.ImageHandle = Image;
     return result;
 }
 
-/// Text is drawn with sokol_debugtext's built-in 8×8 bitmap fonts, so every
-/// glyph is a square of the same size and `FontId` selects one of its six
-/// fonts (0 = KC85/3).
-pub const Platform = struct {
+/// The text contract for sokol_debugtext's built-in 8×8 bitmap fonts:
+/// every glyph is a square of the same size, followed by the letter
+/// spacing, and `FontId` selects one of its six fonts (0 = KC85/3).
+pub const Text = struct {
     /// Glyph height and advance as a fraction of the text size.
     glyph_scale: f32 = 0.75,
-    /// Physical pixels per layout unit. Update it each frame from
-    /// `sokol.app.dpiScale()`.
-    dpi_scale: f32 = 1,
 
-    pub fn measureText(self: *Platform, text: []const u8, _: u16, size: f32) [2]f32 {
-        return .{ @as(f32, @floatFromInt(codepointCount(text))) * self.glyphSize(size), size };
+    pub fn zuiMeasure(self: *Text, run: []const u8, key: zui.MeasureKey(u16)) [2]f32 {
+        return .{ @as(f32, @floatFromInt(codepointCount(run))) * (self.glyphSize(key.size) + key.letter_spacing), key.size };
     }
 
-    pub fn scale(self: *const Platform) f32 {
-        return self.dpi_scale;
-    }
-
-    pub fn glyphSize(self: *const Platform, size: f32) f32 {
+    pub fn glyphSize(self: *const Text, size: f32) f32 {
         return size * self.glyph_scale;
     }
 };
+
+/// Applies what a frame asks of the host that sokol_app can do: the cursor.
+/// It has no IME window to place.
+pub const HostRequestApplier = struct {
+    applied_cursor: ?zui.Cursor = null,
+
+    pub fn apply(self: *HostRequestApplier, requests: zui.HostRequests) void {
+        if (self.applied_cursor == requests.cursor) return;
+        self.applied_cursor = requests.cursor;
+        sokol.app.setMouseCursor(mouseCursorFor(requests.cursor));
+    }
+};
+
+/// The nearest of sokol_app's cursors.
+pub fn mouseCursorFor(cursor: zui.Cursor) sokol.app.MouseCursor {
+    return switch (cursor) {
+        .default, .wait, .progress, .help => .DEFAULT,
+        .pointer, .grab => .POINTING_HAND,
+        .text => .IBEAM,
+        .crosshair => .CROSSHAIR,
+        .move, .grabbing => .RESIZE_ALL,
+        .not_allowed => .NOT_ALLOWED,
+        .resize_horizontal => .RESIZE_EW,
+        .resize_vertical => .RESIZE_NS,
+        .resize_nwse => .RESIZE_NWSE,
+        .resize_nesw => .RESIZE_NESW,
+    };
+}
 
 pub fn codepointCount(text: []const u8) usize {
     var count: usize = 0;
@@ -57,18 +80,29 @@ pub fn codepointCount(text: []const u8) usize {
     return count;
 }
 
-test "measurement is additive" {
-    var platform: Platform = .{};
-    const one = platform.measureText("one", 0, 16);
-    const space = platform.measureText(" ", 0, 16);
-    const two = platform.measureText("two", 0, 16);
-    try std.testing.expectEqual(platform.measureText("one two", 0, 16)[0], one[0] + space[0] + two[0]);
+fn measure(text: *Text, run: []const u8, letter_spacing: f32) [2]f32 {
+    return text.zuiMeasure(run, .{ .font = 0, .size = 16, .letter_spacing = letter_spacing });
 }
 
-test "config makes images sokol textures" {
-    const derived = config(.{ .max_elements = 128 });
+test "measurement is additive, with letter spacing after every glyph" {
+    var text: Text = .{};
+    const one = measure(&text, "one", 2);
+    const space = measure(&text, " ", 2);
+    const two = measure(&text, "two", 2);
+    try std.testing.expectEqual(measure(&text, "one two", 2)[0], one[0] + space[0] + two[0]);
+    try std.testing.expectEqual(@as(f32, 3 * (12 + 2)), one[0]);
+}
+
+test "config makes images sokol textures and text debugtext's" {
+    const derived = config(.{ .limits = .{ .max_elements = 128 } });
     try std.testing.expect(derived.ImageHandle == Image);
-    try std.testing.expectEqual(@as(u32, 128), derived.max_elements);
+    try std.testing.expect(derived.Text == Text);
+    try std.testing.expectEqual(@as(u32, 128), derived.limits.max_elements);
+}
+
+test "every cursor maps to one of sokol's" {
+    try std.testing.expectEqual(sokol.app.MouseCursor.IBEAM, mouseCursorFor(.text));
+    try std.testing.expectEqual(sokol.app.MouseCursor.POINTING_HAND, mouseCursorFor(.pointer));
 }
 
 test {
