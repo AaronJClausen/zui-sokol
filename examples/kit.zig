@@ -16,6 +16,7 @@ pub const Sources = struct {
     mission_log: mission.LogSource = .{},
     launch: mission.LaunchTask = .{},
     tiles: gallery.TileLoads = .{},
+    tile_outcomes: gallery.TileOutcomesSource = .{},
 };
 
 pub const Ui = zui.Context(zui_sokol.config(.{
@@ -33,6 +34,21 @@ pub const Ui = zui.Context(zui_sokol.config(.{
 
 pub const Widgets = zui_widgets.Widgets(Ui);
 pub const TextStyle = Ui.TextStyle;
+
+/// Atkinson Hyperlegible, from the Braille Institute, under the SIL Open
+/// Font License (fonts/OFL.txt).
+pub const body_font: u16 = zui_sokol.Text.bitmap_font_count;
+pub const bold_font: u16 = body_font + 1;
+/// One of sokol_debugtext's bitmap fonts, for code and logs.
+pub const mono_font: u16 = 1;
+
+/// Call once, before the first frame, so `body_font` and `bold_font` name
+/// the fonts they say.
+pub fn addFonts(text: *zui_sokol.Text) error{ InvalidFont, TooManyFonts }!void {
+    const regular = try text.addTrueTypeFont(@embedFile("fonts/AtkinsonHyperlegible-Regular.ttf"));
+    const bold = try text.addTrueTypeFont(@embedFile("fonts/AtkinsonHyperlegible-Bold.ttf"));
+    std.debug.assert(regular == body_font and bold == bold_font);
+}
 
 pub const Screen = enum {
     welcome,
@@ -161,7 +177,7 @@ pub const Palette = struct {
 
 fn widgetTheme(palette: Palette, text_scale: f32) Widgets.Theme {
     return .{
-        .text = .{ .size = 16 * text_scale, .color = palette.text },
+        .text = .{ .size = 16 * text_scale, .color = palette.text, .font = body_font },
         .muted_text_color = palette.muted,
         .disabled_text_color = palette.faint,
         .control = .init(.{
@@ -248,8 +264,11 @@ pub const Shell = struct {
         return .{
             .size = tone.size() * self.text_scale,
             .color = color,
-            .font = if (tone == .hero or tone == .title) 4 else 0,
-            .letter_spacing = if (tone == .hero) 6 else 0,
+            .font = switch (tone) {
+                .hero, .title, .heading => bold_font,
+                .body, .caption, .tiny => body_font,
+            },
+            .letter_spacing = if (tone == .hero) 2 else 0,
         };
     }
 

@@ -12,6 +12,10 @@
             .url = "git+https://github.com/floooh/sokol-zig#cc3473c17bed471d608e221adf0fdcb5a61163e0",
             .hash = "sokol-0.1.0-pb1HK7kgQwAn3WHvyiRMRsck4OexoWoFrKPTnLAEsJYH",
         },
+        .stb = .{
+            .url = "git+https://github.com/nothings/stb#4e9b368bfc071e97206ea5c6adba68dd0cbf8897",
+            .hash = "N-V-__8AAFRGTgBWHIQULKwDqlrvga2AR9enp42AsQ7z-yXN",
+        },
     },
     .paths = .{ "build.zig", "build.zig.zon", "src", "examples", "README.md", "LICENSE" },
 }

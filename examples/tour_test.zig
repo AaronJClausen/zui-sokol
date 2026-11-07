@@ -14,6 +14,7 @@ const Harness = struct {
     frame_number: u64 = 0,
 
     fn init(harness: *Harness) !void {
+        try kit.addFonts(&harness.text);
         harness.ui = try .init(testing.allocator, testing.io, &harness.text);
         harness.app = try testing.allocator.create(App);
         harness.app.init(testing.io, .zero);
@@ -105,4 +106,18 @@ test "every screen fits the default window: no scrolling, no text cut off" {
         try testing.expectEqual([2]f32{ 0, 0 }, stageOverflow(frame));
         try testing.expectEqual(@as(u32, 0), textPastStage(frame));
     }
+}
+
+test "the tour's TrueType fonts load and measure proportionally" {
+    var text: zui_sokol.Text = .{};
+    try kit.addFonts(&text);
+    for ([_]u16{ kit.body_font, kit.bold_font }) |font| {
+        const narrow = text.zuiMeasure("iiii", .{ .font = font, .size = 16, .letter_spacing = 0 });
+        const wide = text.zuiMeasure("WWWW", .{ .font = font, .size = 16, .letter_spacing = 0 });
+        try testing.expect(narrow[0] * 2 < wide[0]);
+        try testing.expect(narrow[1] >= 16 and narrow[1] < 24);
+    }
+    const regular = text.zuiMeasure("Hello", .{ .font = kit.body_font, .size = 16, .letter_spacing = 0 });
+    const bold = text.zuiMeasure("Hello", .{ .font = kit.bold_font, .size = 16, .letter_spacing = 0 });
+    try testing.expect(bold[0] > regular[0]);
 }

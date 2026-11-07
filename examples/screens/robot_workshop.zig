@@ -183,7 +183,7 @@ pub const RobotWorkshop = struct {
         ui.close();
 
         shell.spacer(ui);
-        ui.text(robot.name.slice(), .{ .size = 34 * shell.text_scale, .font = 4, .letter_spacing = 6, .color = Paint.color(robot.body.paint) });
+        ui.text(robot.name.slice(), .{ .size = 38 * shell.text_scale, .font = kit.bold_font, .letter_spacing = 3, .color = Paint.color(robot.body.paint) });
         shell.printColored(ui, .caption, palette.muted, "serial {s}   power {d}", .{ robot.serial, robot.power_level });
     }
 

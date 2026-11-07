@@ -4,7 +4,7 @@ const zui = kit.zui;
 const Ui = kit.Ui;
 const Shell = kit.Shell;
 
-const font_names = [_][]const u8{ "KC85/3", "KC85/4", "Z1013", "Amstrad CPC", "Commodore 64", "Oric Atmos" };
+const font_names = [_][]const u8{ "KC85/3", "KC85/4", "Z1013", "Amstrad CPC", "Commodore 64", "Oric Atmos", "Atkinson Hyperlegible", "Atkinson Hyperlegible Bold" };
 const handle_id: zui.Id = .of("type.handle");
 const column_id: zui.Id = .of("type.column");
 const marquee_id: zui.Id = .of("type.marquee");
@@ -15,10 +15,10 @@ const sample =
     \\Every frame, zui walks what you declare, wraps text between words to fit its box, and hands back a flat list of rectangles, borders and lines of text. Drag the handle on the right edge to change this column's width and watch every line re-wrap; no line is cached between widths except by the measurements of its words.
 ;
 
-const marquee_text = "  *** zui: layout in microseconds  ***  sources: threads publish, the UI never waits  ***  sokol draws it all with sokol_gl and sokol_debugtext  ***  ";
+const marquee_text = "  *** zui: layout in microseconds  ***  sources: threads publish, the UI never waits  ***  sokol_gl draws it all, the letters through stb_truetype  ***  ";
 
 pub const Typography = struct {
-    font: usize = 0,
+    font: usize = kit.body_font,
     size: f32 = 18,
     letter_spacing: f32 = 0,
     line_height: f32 = 0,
@@ -73,7 +73,7 @@ pub const Typography = struct {
         shell.label(ui, .caption, "line height 0 means whatever the text contract measures. Letter spacing goes through the measure key, so differently spaced runs never share a cache entry.");
         const measured = ui.measureText("zui", self.style(shell));
         shell.print(ui, .caption, "ui.measureText(\"zui\") = {d:.1} x {d:.1}", .{ measured[0], measured[1] });
-        shell.print(ui, .caption, "glyph advance = size x {d:.2} + spacing", .{0.75});
+        shell.label(ui, .caption, "Bitmap glyphs advance by size x 0.75; TrueType glyphs by their own widths.");
         if (widgets.button(ui, .of("type.reset"), "Reset", .{})) self.* = .{};
     }
 
@@ -111,7 +111,7 @@ pub const Typography = struct {
     /// copy's measured width loops without a seam.
     fn marquee(self: *Typography, ui: *Ui, shell: *const Shell) void {
         const palette = shell.palette;
-        const marquee_style: Ui.TextStyle = .{ .size = 22, .font = 4, .color = palette.warn, .wrap = .none };
+        const marquee_style: Ui.TextStyle = .{ .size = 24, .font = kit.bold_font, .color = palette.warn, .wrap = .none };
         const loop_width = ui.measureText(marquee_text, marquee_style)[0];
         if (!shell.reduced_motion and self.marquee_speed > 0 and loop_width > 0) {
             const offset: f32 = @floatCast(@mod(shell.seconds * self.marquee_speed, loop_width));
@@ -131,7 +131,7 @@ pub const Typography = struct {
 
     fn specimens(self: *Typography, ui: *Ui, shell: *const Shell) void {
         const palette = shell.palette;
-        shell.openScrollingCard(ui, .of("type.specimens"), "Six fonts, one text contract", .{ .width = .grow });
+        shell.openScrollingCard(ui, .of("type.specimens"), "Six bitmap fonts and two TrueType ones, one text contract", .{ .width = .grow });
         defer ui.close();
         for (font_names, 0..) |name, index| {
             const id: zui.Id = .indexed("type.specimen", index);
@@ -145,10 +145,10 @@ pub const Typography = struct {
                 .decoration = .{ .background = if (selected) palette.hovered else if (ui.hovered(id)) palette.raised else null, .corner_radius = .all(6) },
             });
             defer ui.close();
-            ui.open(.{ .layout = .{ .sizing = .{ .width = .fixed(150) } } });
+            ui.open(.{ .layout = .{ .sizing = .{ .width = .fixed(210) } } });
             shell.labelColored(ui, .caption, if (selected) palette.accent else palette.muted, name);
             ui.close();
-            ui.text("The quick brown fox jumps over the lazy dog. 0123456789 {}[]<>!?", .{ .font = @intCast(index), .size = 16 * shell.text_scale, .color = kit.hueColor(@as(f32, @floatFromInt(index)) / 6, 0.45, 1) });
+            ui.text("The quick brown fox jumps over the lazy dog. 0123456789 {}[]<>!?", .{ .font = @intCast(index), .size = 16 * shell.text_scale, .color = kit.hueColor(@as(f32, @floatFromInt(index)) / font_names.len, 0.45, 1) });
         }
     }
 };

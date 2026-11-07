@@ -200,7 +200,7 @@ pub const App = struct {
             .layout = .{ .padding = .symmetric(10, 6) },
             .decoration = .{ .background = palette.accent, .corner_radius = .{ .top_left = 12, .bottom_right = 12, .top_right = 3, .bottom_left = 3 } },
         });
-        ui.text("zui", .{ .size = 26, .font = 4, .letter_spacing = 2, .color = palette.on_accent });
+        ui.text("zui", .{ .size = 26, .font = kit.bold_font, .letter_spacing = 1, .color = palette.on_accent });
         ui.close();
         {
             ui.open(.{ .layout = .{ .direction = .top_to_bottom, .sizing = .{ .width = .grow }, .child_gap = 4 } });
@@ -254,7 +254,7 @@ pub const App = struct {
             });
             frame_shell.printColored(ui, .caption, if (selected) palette.on_accent else palette.muted, "{d}", .{(index + 1) % 10});
             ui.close();
-            ui.text(info.title, .{ .size = 13 * frame_shell.text_scale, .color = if (selected) palette.text else palette.muted, .wrap = .none });
+            ui.text(info.title, .{ .size = 15 * frame_shell.text_scale, .font = if (selected) kit.bold_font else kit.body_font, .color = if (selected) palette.text else palette.muted, .wrap = .none });
             ui.close();
             if (ui.clicked(id)) app.requested_screen = screen;
         }
@@ -405,7 +405,8 @@ pub const App = struct {
             if (diagnostics.refused_publishes != 0) frame_shell.printColored(ui, .body, palette.bad, "{d} publishes refused, first by .{s}", .{ diagnostics.refused_publishes, diagnostics.first_refusing_source });
         }
         frame_shell.print(ui, .caption, "texts measured since start: {d}", .{perf.measure_calls_total});
-        frame_shell.print(ui, .caption, "producer wakes: {d}   dropped input: {d}   layer overflows: {d}", .{ perf.wakes, perf.dropped_input_events, perf.layer_overflows });
+        frame_shell.print(ui, .caption, "producer wakes: {d}   dropped input: {d}", .{ perf.wakes, perf.dropped_input_events });
+        frame_shell.print(ui, .caption, "layer overflows: {d}   glyph atlas overflows: {d}", .{ perf.layer_overflows, perf.glyph_overflows });
 
         frame_shell.divider(ui);
         frame_shell.label(ui, .caption, "ENVIRONMENT, AS THE HOST REPORTS IT");

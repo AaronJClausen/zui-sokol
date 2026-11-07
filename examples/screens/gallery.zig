@@ -40,15 +40,39 @@ const LoadSettings = struct {
     failure_percent: u32,
 };
 
-const Counters = struct {
-    completed: std.atomic.Value(u32) = .init(0),
-    failed: std.atomic.Value(u32) = .init(0),
-    canceled: std.atomic.Value(u32) = .init(0),
+pub const TileOutcomes = struct {
+    completed: u32 = 0,
+    glitched: u32 = 0,
+    abandoned: u32 = 0,
+};
+
+/// The legend reads its counts through a source rather than straight from
+/// the loaders, so a recorded frame carries them and replays the same.
+pub const TileOutcomesSource = kit.zui_async.Latest(TileOutcomes);
+
+/// `Latest.publish` takes one producer at a time; counting and publishing
+/// under one lock also keeps a stale snapshot from landing last.
+const OutcomeTally = struct {
+    mutex: std.Io.Mutex = .init,
+    outcomes: TileOutcomes = .{},
+
+    fn count(self: *OutcomeTally, io: std.Io, sources: *kit.Sources, waker: zui.Waker, result: TileError!Tile) void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        if (result) |_| {
+            self.outcomes.completed += 1;
+        } else |err| switch (err) {
+            error.Canceled => self.outcomes.abandoned += 1,
+            error.Glitched => self.outcomes.glitched += 1,
+            error.NoThreadAvailable => return,
+        }
+        waker.wakeIf(sources.tile_outcomes.publish(self.outcomes));
+    }
 };
 
 pub const Gallery = struct {
     tasks: std.Io.Group = .init,
-    counters: Counters = .{},
+    outcome_tally: OutcomeTally = .{},
     started: u32 = 0,
     minimum_milliseconds: u32 = 150,
     maximum_milliseconds: u32 = 900,
@@ -104,9 +128,10 @@ pub const Gallery = struct {
         shell.divider(ui);
         shell.label(ui, .caption, "SINCE START");
         legendRow(ui, shell, "started", self.started, shell.palette.text);
-        legendRow(ui, shell, "completed", self.counters.completed.load(.monotonic), shell.palette.good);
-        legendRow(ui, shell, "glitched", self.counters.failed.load(.monotonic), shell.palette.bad);
-        legendRow(ui, shell, "abandoned", self.counters.canceled.load(.monotonic), shell.palette.warn);
+        const outcomes = ui.source(.tile_outcomes).get() orelse TileOutcomes{};
+        legendRow(ui, shell, "completed", outcomes.completed, shell.palette.good);
+        legendRow(ui, shell, "glitched", outcomes.glitched, shell.palette.bad);
+        legendRow(ui, shell, "abandoned", outcomes.abandoned, shell.palette.warn);
         shell.divider(ui);
         shell.label(ui, .caption, "The grid only asks: tiles.get(key). It never starts or waits for work. After endFrame the loader starts what was asked for on other threads, and a key nobody reads for 20 frames is abandoned, so a fast jump cancels what scrolled away.");
     }
@@ -162,7 +187,7 @@ pub const Gallery = struct {
                     .layout = .{ .sizing = .{ .width = .fixed(shape_size), .height = .fixed(shape_size) }, .child_alignment = .{ .x = .center, .y = .center } },
                     .decoration = .{ .background = art.accent, .corner_radius = .{ .top_left = art.corners.bottom_right, .top_right = art.corners.bottom_left, .bottom_left = art.corners.top_right, .bottom_right = art.corners.top_left } },
                 });
-                ui.text(&art.initials, .{ .size = @max(10, shape_size * 0.35), .font = 4, .color = art.background });
+                ui.text(&art.initials, .{ .size = @max(10, shape_size * 0.4), .font = kit.bold_font, .color = art.background });
                 ui.close();
                 ui.close();
             },
@@ -193,7 +218,7 @@ pub const Gallery = struct {
         var to_start = shell.sources.tiles.toStart(shell.waker);
         while (to_start.next()) |load| {
             self.started += 1;
-            self.tasks.concurrent(shell.io, runLoad, .{ &self.counters, shell.io, load, settings }) catch load.finish(error.NoThreadAvailable);
+            self.tasks.concurrent(shell.io, runLoad, .{ &self.outcome_tally, shell.io, shell.sources, shell.waker, load, settings }) catch load.finish(error.NoThreadAvailable);
         }
     }
 
@@ -202,15 +227,9 @@ pub const Gallery = struct {
     }
 };
 
-fn runLoad(counters: *Counters, io: std.Io, load: TileLoads.Load, settings: LoadSettings) void {
+fn runLoad(outcome_tally: *OutcomeTally, io: std.Io, sources: *kit.Sources, waker: zui.Waker, load: TileLoads.Load, settings: LoadSettings) void {
     const result = produceTile(io, load, settings);
-    if (result) |_| {
-        _ = counters.completed.fetchAdd(1, .monotonic);
-    } else |err| switch (err) {
-        error.Canceled => _ = counters.canceled.fetchAdd(1, .monotonic),
-        error.Glitched => _ = counters.failed.fetchAdd(1, .monotonic),
-        error.NoThreadAvailable => {},
-    }
+    outcome_tally.count(io, sources, waker, result);
     load.finish(result);
 }
 

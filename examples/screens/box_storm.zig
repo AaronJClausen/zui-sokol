@@ -175,7 +175,7 @@ pub const BoxStorm = struct {
                     std.fmt.bufPrint(&buffer, "item{d:0>4}", .{index}) catch "?";
                 const hue = @as(f32, @floatFromInt(index)) * 0.003 + seconds * 0.1;
                 ui.open(.{ .layout = .{ .sizing = .{ .width = .fixed(cell_width) } } });
-                ui.text(content, .{ .size = 11, .color = kit.hueColor(hue, 0.5, 1), .wrap = .none });
+                ui.text(content, .{ .size = 12, .font = kit.body_font, .color = kit.hueColor(hue, 0.5, 1), .wrap = .none });
                 ui.close();
             }
         }

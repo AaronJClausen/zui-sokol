@@ -242,7 +242,7 @@ pub const MissionControl = struct {
                 .warn => palette.warn,
                 .alarm => palette.bad,
             };
-            ui.text(line.text(), .{ .size = 12 * shell.text_scale, .color = color, .font = 1 });
+            ui.text(line.text(), .{ .size = 12 * shell.text_scale, .color = color, .font = kit.mono_font });
         }
     }
 

@@ -213,7 +213,7 @@ pub const WindowManager = struct {
                 .layout = .{ .sizing = .{ .width = .grow }, .padding = .all(8) },
                 .decoration = .{ .background = kit.hueColor(0.12 + @as(f32, @floatFromInt(index)) * 0.09, 0.45, 1), .corner_radius = .{ .top_left = 2, .top_right = 2, .bottom_left = 2, .bottom_right = 12 } },
             });
-            ui.text(self.notes[index][0..self.note_lengths[index]], .{ .size = 14 * shell.text_scale, .color = .rgb(0x1b1d2a) });
+            ui.text(self.notes[index][0..self.note_lengths[index]], .{ .size = 15 * shell.text_scale, .font = kit.body_font, .color = .rgb(0x1b1d2a) });
             ui.close();
         }
         ui.open(.{ .layout = .{ .sizing = .{ .width = .grow }, .child_gap = 6 } });

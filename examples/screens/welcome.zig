@@ -48,7 +48,7 @@ fn heroTitle(ui: *Ui, shell: *const Shell) void {
     const seconds = shell.motionSeconds();
     for (letters, 0..) |letter, index| {
         const hue = 0.6 + @as(f32, @floatFromInt(index)) * 0.12 + seconds * 0.05;
-        ui.text(&.{letter}, .{ .size = 96 * shell.text_scale, .font = 4, .color = kit.hueColor(hue, 0.55, 1) });
+        ui.text(&.{letter}, .{ .size = 110 * shell.text_scale, .font = kit.bold_font, .color = kit.hueColor(hue, 0.55, 1) });
     }
     ui.open(.{ .layout = .{ .padding = .{ .left = 12, .bottom = 12 } } });
     shell.labelColored(ui, .heading, shell.palette.muted, "the tour");

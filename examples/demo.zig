@@ -149,6 +149,7 @@ fn onFrame(userdata: ?*anyopaque) callconv(.c) void {
     const submit_microseconds = microsecondsBetween(submit_started, state.now());
     perf.submit_us = if (perf.display_frames == 0) submit_microseconds else perf.submit_us * 0.95 + submit_microseconds * 0.05;
     perf.layer_overflows = state.renderer.layer_overflows;
+    perf.glyph_overflows = state.renderer.glyph_overflows;
 
     const frame_duration: f32 = @floatCast(sapp.frameDuration());
     if (frame_duration > 0) perf.display_fps = 1 / frame_duration;
@@ -204,6 +205,7 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
+    try kit.addFonts(&state.text);
     state.ui = try Ui.init(init.gpa, init.io, &state.text);
     defer state.ui.deinit(init.gpa);
 
@@ -222,6 +224,6 @@ pub fn main(init: std.process.Init) !void {
     });
     if (state.frame_limit != null) {
         const perf = &state.app.perf;
-        std.debug.print("drew {d} frames, declared {d}, {d} layer overflows, diagnostics ok: {}\n", .{ perf.display_frames, perf.zui_frames, perf.layer_overflows, perf.diagnostics.ok() });
+        std.debug.print("drew {d} frames, declared {d}, {d} layer overflows, {d} glyph atlas overflows, diagnostics ok: {}\n", .{ perf.display_frames, perf.zui_frames, perf.layer_overflows, perf.glyph_overflows, perf.diagnostics.ok() });
     }
 }

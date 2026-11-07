@@ -8,6 +8,7 @@ pub const zui_reflect = @import("zui_reflect");
 pub const sokol = @import("sokol");
 
 pub const Renderer = @import("renderer.zig").Renderer;
+pub const truetype = @import("truetype.zig");
 pub const InputCollector = @import("input.zig").InputCollector;
 
 /// A texture as sokol_gl samples it.
@@ -31,14 +32,46 @@ pub fn config(overrides: zui.Config) zui.Config {
     return result;
 }
 
-/// The text contract for sokol_debugtext's built-in 8×8 bitmap fonts:
-/// every glyph is a square of the same size, followed by the letter
-/// spacing, and `FontId` selects one of its six fonts (0 = KC85/3).
+/// The text contract. `FontId` 0 to 5 are sokol_debugtext's built-in 8×8
+/// bitmap fonts (0 = KC85/3), where every glyph is a square of the same
+/// size; the TrueType fonts added with `addTrueTypeFont` follow them.
+///
+/// ```zig
+/// var text: zui_sokol.Text = .{};
+/// const body_font = try text.addTrueTypeFont(@embedFile("Inter-Regular.ttf"));
+/// ui.text("Hello", .{ .font = body_font, .size = 16 });
+/// ```
 pub const Text = struct {
-    /// Glyph height and advance as a fraction of the text size.
+    pub const bitmap_font_count = 6;
+    pub const max_truetype_fonts = 8;
+    /// Measuring only reads the fonts, so zui may measure a cold frame's
+    /// texts on several threads.
+    pub const zui_thread_safe = true;
+
+    /// A bitmap glyph's height and advance as a fraction of the text size.
     glyph_scale: f32 = 0.75,
+    truetype_fonts: [max_truetype_fonts]truetype.Font = undefined,
+    truetype_font_count: u8 = 0,
+
+    /// Returns the font's `FontId`. `data` must outlive the `Text`, as an
+    /// `@embedFile` does. Add fonts before the first frame: measuring may
+    /// run on other threads.
+    pub fn addTrueTypeFont(self: *Text, data: []const u8) error{ InvalidFont, TooManyFonts }!u16 {
+        if (self.truetype_font_count == max_truetype_fonts) return error.TooManyFonts;
+        self.truetype_fonts[self.truetype_font_count] = try .init(data);
+        self.truetype_font_count += 1;
+        return bitmap_font_count + self.truetype_font_count - 1;
+    }
+
+    /// Null for a bitmap font, or an id no font was added for.
+    pub fn trueTypeFont(self: *const Text, font: u16) ?*const truetype.Font {
+        if (font < bitmap_font_count) return null;
+        const index = font - bitmap_font_count;
+        return if (index < self.truetype_font_count) &self.truetype_fonts[index] else null;
+    }
 
     pub fn zuiMeasure(self: *Text, run: []const u8, key: zui.MeasureKey(u16)) [2]f32 {
+        if (self.trueTypeFont(key.font)) |font| return font.measure(run, key.size, key.letter_spacing);
         return .{ @as(f32, @floatFromInt(codepointCount(run))) * (self.glyphSize(key.size) + key.letter_spacing), key.size };
     }
 
@@ -126,4 +159,6 @@ test "every cursor maps to one of sokol's" {
 test {
     _ = @import("input.zig");
     _ = @import("renderer.zig");
+    _ = @import("truetype.zig");
+    _ = @import("glyph_atlas.zig");
 }

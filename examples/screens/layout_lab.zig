@@ -195,7 +195,7 @@ pub const LayoutLab = struct {
             .layout = .{ .sizing = .{ .width = .grow }, .padding = .all(10) },
             .decoration = .{ .background = shell.palette.sunken, .corner_radius = .all(6) },
         });
-        ui.text(writer.buffered(), .{ .size = 13 * shell.text_scale, .color = shell.palette.good, .font = 1 });
+        ui.text(writer.buffered(), .{ .size = 13 * shell.text_scale, .color = shell.palette.good, .font = kit.mono_font });
         ui.close();
     }
 };

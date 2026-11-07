@@ -52,6 +52,7 @@ pub const Perf = struct {
     display_fps: f32 = 0,
     measure_calls_total: u64 = 0,
     layer_overflows: u32 = 0,
+    glyph_overflows: u32 = 0,
     wakes: u32 = 0,
     dropped_input_events: u32 = 0,
     diagnostics: zui.Diagnostics = .{},

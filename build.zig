@@ -9,12 +9,14 @@ pub fn build(b: *std.Build) void {
     const sokol_dependency = b.dependency("sokol", .{ .target = target, .optimize = optimize, .gl = force_opengl });
     const zui_module = zui_dependency.module("zui");
     const zui_widgets_module = zui_dependency.module("zui_widgets");
+    const stb_truetype_module = stbTruetypeModule(b, target, optimize);
 
     const backend_imports: []const std.Build.Module.Import = &.{
         .{ .name = "zui", .module = zui_module },
         .{ .name = "zui_widgets", .module = zui_widgets_module },
         .{ .name = "zui_reflect", .module = zui_dependency.module("zui_reflect") },
         .{ .name = "sokol", .module = sokol_dependency.module("sokol") },
+        .{ .name = "stb_truetype", .module = stb_truetype_module },
     };
     const backend_module = b.addModule("zui_sokol", .{
         .root_source_file = b.path("src/root.zig"),
@@ -67,6 +69,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zui_widgets", .module = zui_widgets_module },
             .{ .name = "zui_reflect", .module = zui_dependency.module("zui_reflect") },
             .{ .name = "sokol", .module = gl_sokol_dependency.module("sokol") },
+            .{ .name = "stb_truetype", .module = stb_truetype_module },
         },
     });
     addRendererOptions(b, gl_backend_module, true);
@@ -105,4 +108,20 @@ fn addRendererOptions(b: *std.Build, module: *std.Build.Module, opengl: bool) vo
         module.linkSystemLibrary("d3d11", .{});
         module.linkSystemLibrary("dxgi", .{});
     }
+}
+
+/// stb_truetype's declarations, translated to Zig, with its implementation
+/// compiled in, for the TrueType fonts of `zui_sokol.Text`.
+fn stbTruetypeModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
+    const stb_dependency = b.dependency("stb", .{});
+    const translated = b.addTranslateC(.{
+        .root_source_file = stb_dependency.path("stb_truetype.h"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    const module = translated.createModule();
+    module.addCSourceFile(.{ .file = b.path("src/stb_truetype.c") });
+    module.addIncludePath(stb_dependency.path(""));
+    return module;
 }
