@@ -184,7 +184,7 @@ pub const Renderer = struct {
                 },
                 .image => |image| {
                     recorder.beginShapes();
-                    drawImage(image.handle, bounds);
+                    drawImage(image.handle, bounds, image.tint, image.corner_radius, self.corner_segments);
                 },
                 .clip_begin => |clip| {
                     clips.push(clip);
@@ -528,15 +528,30 @@ fn drawTrueTypeText(atlas: *const GlyphAtlas, texture: Image, font: *const truet
     sgl.disableTexture();
 }
 
-fn drawImage(image: Image, bounds: zui.Rect) void {
+/// sokol_gl multiplies each texel by the vertex color, which is the tint.
+/// A rounded image is a fan of textured triangles from its center.
+fn drawImage(image: Image, bounds: zui.Rect, tint: zui.Color, radius: zui.CornerRadius, corner_segments: u8) void {
     sgl.enableTexture();
     sgl.texture(image.view, image.sampler);
-    sgl.c4b(255, 255, 255, 255);
-    sgl.beginQuads();
-    sgl.v2fT2f(bounds.x, bounds.y, 0, 0);
-    sgl.v2fT2f(bounds.x + bounds.width, bounds.y, 1, 0);
-    sgl.v2fT2f(bounds.x + bounds.width, bounds.y + bounds.height, 1, 1);
-    sgl.v2fT2f(bounds.x, bounds.y + bounds.height, 0, 1);
+    setColor(tint);
+    if (!hasRoundedCorners(radius) or bounds.width <= 0 or bounds.height <= 0) {
+        sgl.beginQuads();
+        sgl.v2fT2f(bounds.x, bounds.y, 0, 0);
+        sgl.v2fT2f(bounds.x + bounds.width, bounds.y, 1, 0);
+        sgl.v2fT2f(bounds.x + bounds.width, bounds.y + bounds.height, 1, 1);
+        sgl.v2fT2f(bounds.x, bounds.y + bounds.height, 0, 1);
+    } else {
+        var outline: Outline = .{};
+        outline.trace(bounds, radius, .{}, corner_segments);
+        const center: [2]f32 = .{ bounds.x + bounds.width / 2, bounds.y + bounds.height / 2 };
+        sgl.beginTriangles();
+        for (0..outline.count) |index| {
+            const next = (index + 1) % outline.count;
+            for ([3][2]f32{ center, outline.points[index], outline.points[next] }) |point| {
+                sgl.v2fT2f(point[0], point[1], (point[0] - bounds.x) / bounds.width, (point[1] - bounds.y) / bounds.height);
+            }
+        }
+    }
     sgl.end();
     sgl.disableTexture();
 }

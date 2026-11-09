@@ -58,7 +58,8 @@ costs live, and Tab moves focus.
 (`zui_testing.expectRendererConforms`) against the renderer, in the first
 frame of a sokol_app window: `src/conformance.zig` reads each frame back
 with `glReadPixels` before the window presents it, so the suite checks
-every clip and fill by its pixels. sokol_gfx cannot read a frame back, so
+every clip and fill, and the image's tint and rounded corners, by their
+pixels. sokol_gfx cannot read a frame back, so
 the suite always renders with OpenGL, whatever `-Dgl` says. CI runs it on
 Linux under `xvfb-run`, and it passes on Windows.
 
@@ -81,7 +82,7 @@ To move the pin, push the zui change and run
 | `rectangle` | sokol_gl quads, or a triangle fan with each corner's own radius |
 | `border` | a ring of triangles inside the bounds, with per-edge widths and per-corner radii |
 | `text` | `FontId` 0–5: sokol_debugtext, one call per wrapped line, with letter spacing placing each glyph on its own. From 6: a TrueType font added with `Text.addTrueTypeFont`, its glyphs rasterized by stb_truetype at the text's size in physical pixels into a glyph atlas and drawn as sokol_gl quads |
-| `image` | a textured sokol_gl quad (`zui_sokol.Image`: a view and a sampler) |
+| `image` | a textured sokol_gl quad colored by the tint, or a triangle fan with each corner's own radius (`zui_sokol.Image`: a view and a sampler) |
 | `clip_begin` / `clip_end` | `sg.applyScissorRect` per layer, at the record's `scale × zoom` |
 | mouse and touch | `MOUSE_*` and `TOUCHES_*` events, in order; each touch is a pointer of its own |
 | wheel | `MOUSE_SCROLL` events, flipped and scaled by `InputCollector.wheel_step` |
