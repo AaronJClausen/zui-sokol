@@ -29,6 +29,7 @@ const native = if (!draws_into_win32) struct {
 /// scissor rectangle.
 pub const Renderer = struct {
     pub const zui_surfaces: zui.SurfaceKinds = if (draws_into_win32) .initMany(&.{ .library, .win32 }) else .initOne(.library);
+    pub const zui_commands: zui.CommandSet = .initMany(&.{ .gradient, .shadow });
     pub const ImageHandle = Image;
 
     const max_layers = 1024;
@@ -185,6 +186,16 @@ pub const Renderer = struct {
                 .image => |image| {
                     recorder.beginShapes();
                     drawImage(image.handle, bounds, image.tint, image.corner_radius, self.corner_segments);
+                },
+                .gradient => |gradient| {
+                    recorder.beginShapes();
+                    fillGradient(bounds, gradient, self.corner_segments);
+                    if (self.composes_alpha) self.coverAlpha(recorder.layer, fillGradient, .{ bounds, gradient, self.corner_segments });
+                },
+                .shadow => |shadow| {
+                    recorder.beginShapes();
+                    drawShadow(bounds, shadow, self.corner_segments);
+                    if (self.composes_alpha) self.coverAlpha(recorder.layer, drawShadow, .{ bounds, shadow, self.corner_segments });
                 },
                 .clip_begin => |clip| {
                     clips.push(clip);
@@ -383,7 +394,16 @@ fn fillRectangle(bounds: zui.Rect, radius: zui.CornerRadius, color: zui.Color, c
     }
     var outline: Outline = .{};
     outline.trace(bounds, radius, .{}, corner_segments);
-    const center: [2]f32 = .{ bounds.x + bounds.width / 2, bounds.y + bounds.height / 2 };
+    fillOutline(&outline, centerOf(bounds));
+}
+
+fn centerOf(bounds: zui.Rect) [2]f32 {
+    return .{ bounds.x + bounds.width / 2, bounds.y + bounds.height / 2 };
+}
+
+/// In the current color, as a fan from `center`, which an outline of a
+/// rounded rectangle always surrounds.
+fn fillOutline(outline: *const Outline, center: [2]f32) void {
     sgl.beginTriangles();
     for (0..outline.count) |index| {
         const next = (index + 1) % outline.count;
@@ -392,6 +412,119 @@ fn fillRectangle(bounds: zui.Rect, radius: zui.CornerRadius, color: zui.Color, c
         sgl.v2f(outline.points[next][0], outline.points[next][1]);
     }
     sgl.end();
+}
+
+/// The longest a gradient's band may be, along it, in layout units.
+/// sokol_gl blends vertex colors in sRGB, so the gradient is drawn in bands
+/// across it, each vertex taking the OKLab color at its point; over a short
+/// band the two blends differ by less than a step of 8-bit color.
+const gradient_band_length = 4;
+const max_gradient_bands = 64;
+
+/// A rounded rectangle is convex, so each band of it is a convex polygon:
+/// the outline cut by the two lines that bound the band.
+fn fillGradient(bounds: zui.Rect, gradient: anytype, corner_segments: u8) void {
+    var outline: Outline = .{};
+    outline.trace(bounds, gradient.corner_radius, .{}, corner_segments);
+    const direction: [2]f32 = .{ @cos(gradient.angle), @sin(gradient.angle) };
+    const length = @abs(bounds.width * direction[0]) + @abs(bounds.height * direction[1]);
+    const band_count: usize = @intFromFloat(std.math.clamp(@ceil(length / gradient_band_length), 1, max_gradient_bands));
+    const band_length = length / @as(f32, @floatFromInt(band_count));
+    const center = centerOf(bounds);
+    const reversed: [2]f32 = .{ -direction[0], -direction[1] };
+
+    sgl.beginTriangles();
+    for (0..band_count) |band| {
+        const start = -length / 2 + band_length * @as(f32, @floatFromInt(band));
+        var past_start: ConvexPolygon = .{};
+        past_start.cut(outline.points[0..outline.count], center, direction, start);
+        var band_polygon: ConvexPolygon = .{};
+        band_polygon.cut(past_start.points[0..past_start.count], center, reversed, -(start + band_length));
+        if (band_polygon.count < 3) continue;
+        const first = band_polygon.points[0];
+        for (1..band_polygon.count - 1) |index| {
+            for ([3][2]f32{ first, band_polygon.points[index], band_polygon.points[index + 1] }) |point| {
+                const color = gradient.colorAt(bounds, point);
+                sgl.v2fC4b(point[0], point[1], color.r, color.g, color.b, color.a);
+            }
+        }
+    }
+    sgl.end();
+}
+
+const ConvexPolygon = struct {
+    points: [Outline.max_points + 2][2]f32 = undefined,
+    count: usize = 0,
+
+    /// Keeps the part of `polygon` at least `distance` along `direction`
+    /// from `origin`. Cutting a convex polygon by a line adds at most one
+    /// point.
+    fn cut(self: *ConvexPolygon, polygon: []const [2]f32, origin: [2]f32, direction: [2]f32, distance: f32) void {
+        self.count = 0;
+        for (polygon, 0..) |here, index| {
+            const next = polygon[(index + 1) % polygon.len];
+            const here_beyond = (here[0] - origin[0]) * direction[0] + (here[1] - origin[1]) * direction[1] - distance;
+            const next_beyond = (next[0] - origin[0]) * direction[0] + (next[1] - origin[1]) * direction[1] - distance;
+            if (here_beyond >= 0) self.add(here);
+            if ((here_beyond >= 0) != (next_beyond >= 0)) {
+                const along = here_beyond / (here_beyond - next_beyond);
+                self.add(.{ here[0] + (next[0] - here[0]) * along, here[1] + (next[1] - here[1]) * along });
+            }
+        }
+    }
+
+    fn add(self: *ConvexPolygon, point: [2]f32) void {
+        if (self.count == self.points.len) return;
+        self.points[self.count] = point;
+        self.count += 1;
+    }
+};
+
+/// How many rings a shadow's blur fades through, from its color to clear.
+const shadow_fade_rings = 6;
+
+/// The box at the shadow's offset, grown by its spread, in its color; then
+/// rings out to the blur, each fainter, easing out as a blurred edge does.
+fn drawShadow(bounds: zui.Rect, shadow: anytype, corner_segments: u8) void {
+    const caster: zui.Rect = .{ .x = bounds.x + shadow.offset[0], .y = bounds.y + shadow.offset[1], .width = bounds.width, .height = bounds.height };
+    const spread = @max(shadow.spread, -@min(caster.width, caster.height) / 2);
+    var inner: Outline = .{};
+    inner.trace(caster, shadow.corner_radius, .all(-spread), corner_segments);
+    setColor(shadow.color);
+    fillOutline(&inner, centerOf(caster));
+    if (shadow.blur <= 0) return;
+
+    var inner_alpha = shadow.color.a;
+    sgl.beginTriangles();
+    for (1..shadow_fade_rings + 1) |ring| {
+        const reached = @as(f32, @floatFromInt(ring)) / shadow_fade_rings;
+        var outer: Outline = .{};
+        outer.trace(caster, shadow.corner_radius, .all(-(spread + shadow.blur * reached)), corner_segments);
+        const outer_alpha: u8 = @intFromFloat(@round(@as(f32, @floatFromInt(shadow.color.a)) * (1 - smoothstep(reached))));
+        const inner_color: zui.Color = .{ .r = shadow.color.r, .g = shadow.color.g, .b = shadow.color.b, .a = inner_alpha };
+        const outer_color: zui.Color = .{ .r = shadow.color.r, .g = shadow.color.g, .b = shadow.color.b, .a = outer_alpha };
+        for (0..outer.count) |index| {
+            const next = (index + 1) % outer.count;
+            for ([6]struct { [2]f32, zui.Color }{
+                .{ inner.points[index], inner_color },
+                .{ outer.points[index], outer_color },
+                .{ outer.points[next], outer_color },
+                .{ inner.points[index], inner_color },
+                .{ outer.points[next], outer_color },
+                .{ inner.points[next], inner_color },
+            }) |vertex| {
+                const point, const color = vertex;
+                sgl.v2fC4b(point[0], point[1], color.r, color.g, color.b, color.a);
+            }
+        }
+        inner = outer;
+        inner_alpha = outer_alpha;
+    }
+    sgl.end();
+}
+
+fn smoothstep(amount: f32) f32 {
+    return amount * amount * (3 - 2 * amount);
 }
 
 /// Borders are drawn inside the bounds, as CSS draws them: a ring between
@@ -424,8 +557,9 @@ fn strokeBorder(bounds: zui.Rect, widths: zui.Edges, radius: zui.CornerRadius, c
 /// outlines of one rectangle can be joined point by point.
 const Outline = struct {
     const max_segments = 32;
+    const max_points = 4 * (max_segments + 1);
 
-    points: [4 * (max_segments + 1)][2]f32 = undefined,
+    points: [max_points][2]f32 = undefined,
     count: usize = 0,
 
     fn trace(self: *Outline, bounds: zui.Rect, radius: zui.CornerRadius, inset: zui.Edges, corner_segments: u8) void {
@@ -554,6 +688,22 @@ fn drawImage(image: Image, bounds: zui.Rect, tint: zui.Color, radius: zui.Corner
     }
     sgl.end();
     sgl.disableTexture();
+}
+
+test "a band of a square is the strip between its two cuts" {
+    const square = [_][2]f32{ .{ 0, 0 }, .{ 10, 0 }, .{ 10, 10 }, .{ 0, 10 } };
+    var past_start: ConvexPolygon = .{};
+    past_start.cut(&square, .{ 5, 5 }, .{ 1, 0 }, -1);
+    var band: ConvexPolygon = .{};
+    band.cut(past_start.points[0..past_start.count], .{ 5, 5 }, .{ -1, 0 }, -1);
+    try std.testing.expectEqual(4, band.count);
+    for (band.points[0..band.count]) |point| try std.testing.expect(point[0] == 4 or point[0] == 6);
+}
+
+test "a shadow's fade starts at its color and ends clear" {
+    try std.testing.expectEqual(0, smoothstep(0));
+    try std.testing.expectEqual(1, smoothstep(1));
+    try std.testing.expectEqual(0.5, smoothstep(0.5));
 }
 
 test "outlines keep the same point count for any radius" {

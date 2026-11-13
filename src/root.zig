@@ -18,14 +18,14 @@ pub const Image = struct {
 };
 
 /// A `zui.Config` for `Renderer`: text measured by `Text`, images that are
-/// `Image`s, and exactly the commands `Renderer` draws. Override any other
-/// field:
+/// `Image`s, and exactly the commands `Renderer` draws, gradients and
+/// shadows among them. Override any other field:
 /// `zui.Context(zui_sokol.config(.{ .limits = .{ .max_elements = 8192 } }))`.
 pub fn config(overrides: zui.Config) zui.Config {
     comptime zui.checkRenderer(Renderer);
     var result = overrides;
     result.Text = Text;
-    result.commands = .initEmpty();
+    result.commands = Renderer.zui_commands;
     result.ImageHandle = Renderer.ImageHandle;
     result.CustomData = void;
     result.MaterialHandle = void;
@@ -138,9 +138,10 @@ test "config makes images sokol textures and text debugtext's" {
     try std.testing.expectEqual(@as(u32, 128), derived.limits.max_elements);
 }
 
-test "the renderer draws exactly the base commands and images, into sokol_app's swapchain" {
+test "the renderer draws the base commands, images, gradients and shadows, into sokol_app's swapchain" {
     const Ui = zui.Context(config(.{ .limits = .{ .max_elements = 8 } }));
-    try std.testing.expectEqual(6, @typeInfo(Ui.RenderCommand.Payload).@"union".fields.len);
+    try std.testing.expectEqual(8, @typeInfo(Ui.RenderCommand.Payload).@"union".fields.len);
+    try std.testing.expect(@hasField(Ui.RenderCommand.Payload, "gradient") and @hasField(Ui.RenderCommand.Payload, "shadow"));
     var text: Text = .{};
     var ui = try Ui.init(std.testing.allocator, std.testing.io, &text);
     defer ui.deinit(std.testing.allocator);

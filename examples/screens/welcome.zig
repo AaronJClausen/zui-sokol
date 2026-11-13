@@ -125,7 +125,7 @@ fn card(ui: *Ui, shell: *const Shell, screen: Screen) void {
         defer ui.close();
         shell.label(ui, .heading, info.title);
         shell.spacer(ui);
-        shell.printColored(ui, .caption, palette.faint, "Ctrl+{d}", .{(@intFromEnum(screen) + 1) % 10});
+        if (screen.shortcutDigit()) |digit| shell.printColored(ui, .caption, palette.faint, "Ctrl+{d}", .{digit});
     }
     shell.label(ui, .caption, info.tagline);
     shell.spacer(ui);

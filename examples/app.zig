@@ -22,6 +22,7 @@ const Screens = struct {
     robot_workshop: @import("screens/robot_workshop.zig").RobotWorkshop = .{},
     pixel_pad: @import("screens/pixel_pad.zig").PixelPad = .{},
     typography: @import("screens/typography.zig").Typography = .{},
+    light_and_depth: @import("screens/light_and_depth.zig").LightAndDepth = .{},
     classic: showcase.Showcase(Ui) = .{ .title = "zui + sokol", .widgets = .{} },
 };
 
@@ -173,8 +174,9 @@ pub const App = struct {
         for (digit_keys, 0..) |key, index| {
             if (ui.chordPressed(.{ .key = key, .modifiers = control })) app.requested_screen = @enumFromInt(index);
         }
-        if (ui.chordPressed(.{ .key = .page_down, .modifiers = control })) app.requested_screen = @enumFromInt((@intFromEnum(app.current) + 1) % 10);
-        if (ui.chordPressed(.{ .key = .page_up, .modifiers = control })) app.requested_screen = @enumFromInt((@intFromEnum(app.current) + 9) % 10);
+        const screen_count = @typeInfo(Screen).@"enum".fields.len;
+        if (ui.chordPressed(.{ .key = .page_down, .modifiers = control })) app.requested_screen = @enumFromInt((@intFromEnum(app.current) + 1) % screen_count);
+        if (ui.chordPressed(.{ .key = .page_up, .modifiers = control })) app.requested_screen = @enumFromInt((@intFromEnum(app.current) + screen_count - 1) % screen_count);
         if (ui.chordPressed(.{ .key = .equals, .modifiers = control })) app.setZoom(app.zoom + 0.1);
         if (ui.chordPressed(.{ .key = .minus, .modifiers = control })) app.setZoom(app.zoom - 0.1);
         if (ui.chordPressed(.{ .key = .i, .modifiers = control })) app.inspector_open = !app.inspector_open;
@@ -252,7 +254,7 @@ pub const App = struct {
                 .layout = .{ .sizing = .{ .width = .fixed(22), .height = .fixed(22) }, .child_alignment = .{ .x = .center, .y = .center } },
                 .decoration = .{ .background = if (selected) swatch else palette.sunken, .corner_radius = .all(11) },
             });
-            frame_shell.printColored(ui, .caption, if (selected) palette.on_accent else palette.muted, "{d}", .{(index + 1) % 10});
+            if (screen.shortcutDigit()) |digit| frame_shell.printColored(ui, .caption, if (selected) palette.on_accent else palette.muted, "{d}", .{digit});
             ui.close();
             ui.text(info.title, .{ .size = 15 * frame_shell.text_scale, .font = if (selected) kit.bold_font else kit.body_font, .color = if (selected) palette.text else palette.muted, .wrap = .none });
             ui.close();

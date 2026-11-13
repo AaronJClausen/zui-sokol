@@ -39,8 +39,9 @@ pub const TextStyle = Ui.TextStyle;
 /// Font License (fonts/OFL.txt).
 pub const body_font: u16 = zui_sokol.Text.bitmap_font_count;
 pub const bold_font: u16 = body_font + 1;
-/// One of sokol_debugtext's bitmap fonts, for code and logs.
-pub const mono_font: u16 = 1;
+/// One of sokol_debugtext's bitmap fonts, for code and logs: the Amstrad
+/// CPC's, since the KC85 fonts draw `{` and `}` as umlauts.
+pub const mono_font: u16 = 3;
 
 /// Call once, before the first frame, so `body_font` and `bold_font` name
 /// the fonts they say.
@@ -60,6 +61,7 @@ pub const Screen = enum {
     robot_workshop,
     pixel_pad,
     typography,
+    light_and_depth,
     classic,
 
     pub const Info = struct {
@@ -68,6 +70,13 @@ pub const Screen = enum {
         features: []const []const u8,
         hue: f32,
     };
+
+    /// Ctrl+1 to Ctrl+9, then Ctrl+0, reach the first ten screens; the rest
+    /// have no digit.
+    pub fn shortcutDigit(screen: Screen) ?u8 {
+        const index = @intFromEnum(screen);
+        return if (index < 10) (index + 1) % 10 else null;
+    }
 
     pub fn info(screen: Screen) Info {
         return switch (screen) {
@@ -80,6 +89,7 @@ pub const Screen = enum {
             .robot_workshop => .{ .title = "Robot Workshop", .tagline = "An editor generated from a struct", .features = &.{ "zui_reflect", "widgets", "environment" }, .hue = 0.3 },
             .pixel_pad => .{ .title = "Pixel Pad", .tagline = "Pointer, keys, chords and typed text", .features = &.{ "pointerLocal", "chords", "keyEvents" }, .hue = 0.92 },
             .typography => .{ .title = "Typography", .tagline = "Six bitmap fonts, wrapping and spacing", .features = &.{ "wrap modes", "letter spacing", "zoom" }, .hue = 0.15 },
+            .light_and_depth => .{ .title = "Light & Depth", .tagline = "Gradients in OKLab, shadows and glow", .features = &.{ "Gradient", "Shadow", "glow" }, .hue = 0.75 },
             .classic => .{ .title = "Classic", .tagline = "The showcase every zui backend shares", .features = &.{ "shared demo", "compare renderers" }, .hue = 0.7 },
         };
     }
