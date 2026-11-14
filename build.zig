@@ -27,6 +27,7 @@ pub fn build(b: *std.Build) void {
     addRendererOptions(b, backend_module, force_opengl);
 
     const unit_tests = b.addTest(.{ .root_module = backend_module });
+    linkThroughLlvmOnLinux(unit_tests);
     b.step("test", "Run the backend's unit tests").dependOn(&b.addRunArtifact(unit_tests).step);
 
     const demo_imports: []const std.Build.Module.Import = &.{
@@ -40,6 +41,7 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{ .root_source_file = b.path("examples/demo.zig"), .target = target, .optimize = optimize, .imports = demo_imports }),
     });
     if (target.result.os.tag == .windows) demo.subsystem = .windows;
+    linkThroughLlvmOnLinux(demo);
     _ = b.addModule("zui_sokol_tour", .{ .root_source_file = b.path("examples/tour_app.zig"), .target = target, .optimize = optimize, .imports = demo_imports });
 
     const tour_tests = b.addTest(.{ .root_module = b.createModule(.{
@@ -48,6 +50,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = demo_imports,
     }) });
+    linkThroughLlvmOnLinux(tour_tests);
     b.step("test-tour", "Declare every screen of the demo headlessly; fail if one exceeds its limits or does not fit the default window").dependOn(&b.addRunArtifact(tour_tests).step);
     b.installArtifact(demo);
 
@@ -85,11 +88,22 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+    linkThroughLlvmOnLinux(conformance);
     b.step("conformance", "Run zui's renderer suite against the renderer, in a window, with OpenGL").dependOn(&b.addRunArtifact(conformance).step);
 
     const formatted_paths: []const []const u8 = &.{ "build.zig", "build.zig.zon", "src", "examples" };
     b.step("fmt", "Format all Zig sources").dependOn(&b.addFmt(.{ .paths = formatted_paths }).step);
     b.step("fmt-check", "Fail if any Zig source is not formatted").dependOn(&b.addFmt(.{ .paths = formatted_paths, .check = true }).step);
+}
+
+/// Zig 0.16's own ELF linker rejects the R_X86_64_PC64 relocations in the
+/// `.sframe` section that GCC 16's crt1.o carries, and LLD crashes the
+/// compiler unless the LLVM backend produced the objects.
+fn linkThroughLlvmOnLinux(compile: *std.Build.Step.Compile) void {
+    if (compile.rootModuleTarget().os.tag == .linux) {
+        compile.use_llvm = true;
+        compile.use_lld = true;
+    }
 }
 
 /// On Windows the renderer draws into a native host's window with a
