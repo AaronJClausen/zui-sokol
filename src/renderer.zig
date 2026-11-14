@@ -10,6 +10,7 @@ const Text = @import("root.zig").Text;
 const Image = @import("root.zig").Image;
 const truetype = @import("truetype.zig");
 const GlyphAtlas = @import("glyph_atlas.zig").GlyphAtlas;
+const BackdropBlurs = @import("backdrop_blur.zig").BackdropBlurs;
 
 /// On Windows the renderer draws into a native host's window with a
 /// context of its own: a Direct3D 11 swapchain composed into the window,
@@ -26,13 +27,15 @@ const native = if (!draws_into_win32) struct {
 /// OpenGL on Windows, into a native host's `.win32` window. Both record into
 /// numbered layers that are replayed in order, so shapes and text
 /// interleave in zui's paint order, and each layer is drawn under its own
-/// scissor rectangle.
+/// scissor rectangle. A frame with a backdrop blur is drawn offscreen and
+/// copied to the surface, so that the blur can sample what is beneath it.
 pub const Renderer = struct {
     pub const zui_surfaces: zui.SurfaceKinds = if (draws_into_win32) .initMany(&.{ .library, .win32 }) else .initOne(.library);
-    pub const zui_commands: zui.CommandSet = .initMany(&.{ .gradient, .shadow });
+    pub const zui_commands: zui.CommandSet = .initMany(&.{ .gradient, .shadow, .backdrop_blur });
     pub const ImageHandle = Image;
 
     const max_layers = 1024;
+    const present_layer = 2 * max_layers;
 
     text: *const Text,
     /// What each frame's pass clears to before drawing.
@@ -57,6 +60,7 @@ pub const Renderer = struct {
     /// Times a frame needed more glyphs than the atlas holds; the ones
     /// that did not fit were not drawn.
     glyph_overflows: u32 = 0,
+    backdrop_blurs: BackdropBlurs = .{},
 
     /// Call after `sokol.gfx.setup`.
     pub fn init(text: *const Text) Renderer {
@@ -107,6 +111,7 @@ pub const Renderer = struct {
     }
 
     pub fn deinit(self: *Renderer) void {
+        self.backdrop_blurs.deinit();
         self.destroyGlyphTexture();
         if (self.glyph_texture.sampler.id != 0) sg.destroySampler(self.glyph_texture.sampler);
         if (self.glyphs) |atlas| std.heap.page_allocator.destroy(atlas);
@@ -134,23 +139,37 @@ pub const Renderer = struct {
             .win32 => if (comptime !draws_into_win32) return error.UnsupportedSurface else if (self.native) |*context| context.swapchain() else return error.UnsupportedSurface,
             else => return error.UnsupportedSurface,
         };
-        var action: sg.PassAction = .{};
-        action.colors[0] = .{ .load_action = .CLEAR, .clear_value = .{
+        const clear_value: sg.Color = .{
             .r = @as(f32, @floatFromInt(self.clear_color.r)) / 255,
             .g = @as(f32, @floatFromInt(self.clear_color.g)) / 255,
             .b = @as(f32, @floatFromInt(self.clear_color.b)) / 255,
             .a = @as(f32, @floatFromInt(self.clear_color.a)) / 255,
-        } };
-        sg.beginPass(.{ .action = action, .swapchain = swapchain });
-        self.draw(frame.commands(), frame.params);
-        sg.endPass();
+        };
+        var action: sg.PassAction = .{};
+        action.colors[0] = .{ .load_action = .CLEAR, .clear_value = clear_value };
+        self.backdrop_blurs.prepare(frame.commands(), .{ swapchain.width, swapchain.height });
+        const layer_count = self.record(frame.commands(), frame.params);
+        if (self.backdrop_blurs.count == 0) {
+            sg.beginPass(.{ .action = action, .swapchain = swapchain });
+            self.replay(layer_count, frame.params, clear_value);
+            sg.endPass();
+        } else {
+            sg.beginPass(self.backdrop_blurs.scenePass(.CLEAR, clear_value));
+            self.replay(layer_count, frame.params, clear_value);
+            sg.endPass();
+            sg.beginPass(.{ .action = action, .swapchain = swapchain });
+            applyScissor(null, frame.params);
+            sgl.drawLayer(present_layer);
+            sg.endPass();
+        }
         sg.commit();
         if (comptime draws_into_win32) if (surface == .win32) self.native.?.present();
     }
 
+    /// Records `commands` into numbered layers, returning how many.
     /// `params` are the frame record's: its viewport and the physical
     /// pixels per layout unit (`scale × zoom`).
-    fn draw(self: *Renderer, commands: anytype, params: zui.FrameParams) void {
+    fn record(self: *Renderer, commands: anytype, params: zui.FrameParams) usize {
         const viewport = params.viewport;
 
         sgl.defaults();
@@ -197,6 +216,18 @@ pub const Renderer = struct {
                     drawShadow(bounds, shadow, self.corner_segments);
                     if (self.composes_alpha) self.coverAlpha(recorder.layer, drawShadow, .{ bounds, shadow, self.corner_segments });
                 },
+                .backdrop_blur => |blur| {
+                    if (self.backdrop_blurs.ready) if (recorder.beginBackdropBlur()) |layer| {
+                        if (self.backdrop_blurs.record(bounds, blur.radius, viewport, layer)) {
+                            var outline: Outline = .{};
+                            outline.trace(bounds, blur.corner_radius, .{}, self.corner_segments);
+                            self.backdrop_blurs.drawBlurred(outline.points[0..outline.count], centerOf(bounds), viewport);
+                        }
+                    };
+                    recorder.beginShapes();
+                    fillRectangle(bounds, blur.corner_radius, blur.tint, self.corner_segments);
+                    if (self.composes_alpha) self.coverAlpha(recorder.layer, fillRectangle, .{ bounds, blur.corner_radius, blur.tint, self.corner_segments });
+                },
                 .clip_begin => |clip| {
                     clips.push(clip);
                     recorder.beginLayer(clips.current());
@@ -208,8 +239,22 @@ pub const Renderer = struct {
             }
         }
 
-        const scissors = self.layer_scissors[0 .. recorder.layer + 1];
+        if (self.backdrop_blurs.count > 0) self.backdrop_blurs.recordPresent(viewport, present_layer);
+        return recorder.layer + 1;
+    }
+
+    /// Draws the recorded layers in the current pass, which is the scene's
+    /// when the frame has backdrop blurs: it ends before each blur's
+    /// passes, and the scene's resumes after them.
+    fn replay(self: *Renderer, layer_count: usize, params: zui.FrameParams, clear_value: sg.Color) void {
+        const scissors = self.layer_scissors[0..layer_count];
+        var next_blur: usize = 0;
         for (scissors, 0..) |scissor, layer| {
+            while (next_blur < self.backdrop_blurs.count and self.backdrop_blurs.layers_after[next_blur] == layer) : (next_blur += 1) {
+                sg.endPass();
+                self.backdrop_blurs.runPasses(next_blur);
+                sg.beginPass(self.backdrop_blurs.scenePass(.LOAD, clear_value));
+            }
             applyScissor(scissor, params);
             sgl.drawLayer(@intCast(layer));
             sdtx.drawLayer(@intCast(layer));
@@ -324,6 +369,18 @@ const LayerRecorder = struct {
 
     fn beginText(self: *LayerRecorder) void {
         self.has_text = true;
+    }
+
+    /// A backdrop blur samples everything painted before it, so it starts a
+    /// layer that its passes run before. Returns that layer, or null when
+    /// no layer is left.
+    fn beginBackdropBlur(self: *LayerRecorder) ?usize {
+        if (self.has_shapes or self.has_text) {
+            if (self.layer + 1 == Renderer.max_layers) return null;
+            self.beginLayer(self.renderer.layer_scissors[self.layer]);
+        }
+        self.has_shapes = true;
+        return self.layer;
     }
 
     fn beginLayer(self: *LayerRecorder, scissor: ?zui.Rect) void {

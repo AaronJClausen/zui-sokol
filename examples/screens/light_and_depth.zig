@@ -18,6 +18,8 @@ pub const LightAndDepth = struct {
     angle_degrees: f32 = 30,
     from_hue: f32 = 0.92,
     to_hue: f32 = 0.58,
+    frost_blur: f32 = 10,
+    frost_opacity: f32 = 0.2,
     animate: bool = true,
 
     pub fn declare(self: *LightAndDepth, ui: *Ui, shell: *const Shell) void {
@@ -63,6 +65,11 @@ pub const LightAndDepth = struct {
         return .{ .color = .{ .r = 0, .g = 0, .b = 0, .a = alpha }, .offset = self.offset, .blur = self.blur, .spread = self.spread };
     }
 
+    fn frost(self: *const LightAndDepth) zui.BackdropBlur {
+        const alpha: u8 = @intFromFloat(@round(std.math.clamp(self.frost_opacity, 0, 1) * 255));
+        return .{ .radius = self.frost_blur, .tint = .{ .r = 255, .g = 255, .b = 255, .a = alpha } };
+    }
+
     fn controls(self: *LightAndDepth, ui: *Ui, shell: *const Shell) void {
         const widgets = shell.widgets;
         shell.openScrollingCard(ui, .of("depth.controls"), "zui.Effects", .{ .width = .fixed(340), .height = .grow });
@@ -81,10 +88,14 @@ pub const LightAndDepth = struct {
         sliderRow(ui, shell, .of("depth.angle"), "angle", &self.angle_degrees, 0, 360, 1, "{d:.0}");
         sliderRow(ui, shell, .of("depth.from"), "from hue", &self.from_hue, 0, 1, 0.01, "{d:.2}");
         sliderRow(ui, shell, .of("depth.to"), "to hue", &self.to_hue, 0, 1, 0.01, "{d:.2}");
-        _ = widgets.checkbox(ui, .of("depth.animate"), "turn the gradient, pulse the glows", &self.animate, .{});
+        _ = widgets.checkbox(ui, .of("depth.animate"), "turn the gradient, drift the frost, pulse the glows", &self.animate, .{});
+        shell.divider(ui);
+        shell.labelColored(ui, .body, shell.palette.accent, "backdrop blur");
+        sliderRow(ui, shell, .of("depth.frost_blur"), "blur", &self.frost_blur, 0, 40, 1, "{d:.0}");
+        sliderRow(ui, shell, .of("depth.frost_opacity"), "tint", &self.frost_opacity, 0, 1, 0.05, "{d:.2}");
         shell.divider(ui);
         sliderRow(ui, shell, .of("depth.radius"), "corner radius", &self.corner_radius, 0, 80, 1, "{d:.0}");
-        shell.label(ui, .caption, "Both effects take the element's corner radius. The renderer declares .gradient and .shadow; one that does not gets the gradient as its middle color and no shadow.");
+        shell.label(ui, .caption, "Every effect takes its element's corner radius. The renderer declares .gradient, .shadow and .backdrop_blur; one that does not gets the gradient as its middle color, no shadow, and the frost as its tint alone.");
         if (widgets.button(ui, .of("depth.reset"), "Reset", .{})) self.* = .{};
     }
 
@@ -105,9 +116,18 @@ pub const LightAndDepth = struct {
         });
         ui.text("Light & Depth", shell.style(.title, .rgb(0xffffff)));
         ui.text("a gradient in OKLab over a soft shadow", shell.style(.caption, .rgb(0xffffff)));
+        const frost_now = self.frost();
+        ui.open(.{
+            .floating = .{ .offset = .{ 150 + 90 * @sin(seconds * 0.8), 64 } },
+            .layout = .{ .sizing = .{ .width = .fixed(150), .height = .fixed(120) }, .padding = .all(12), .child_alignment = .{ .y = .end } },
+            .decoration = .{ .corner_radius = .all(16) },
+            .effects = &.{ .backdrop_blur = frost_now },
+        });
+        ui.text("frosted", shell.style(.caption, .rgb(0xffffff)));
+        ui.close();
         ui.close();
 
-        var code_buffer: [512]u8 = undefined;
+        var code_buffer: [640]u8 = undefined;
         const code = std.fmt.bufPrint(&code_buffer,
             \\.effects = &.{{
             \\    .gradient = .{{
@@ -119,10 +139,15 @@ pub const LightAndDepth = struct {
             \\        .blur = {d:.0}, .spread = {d:.0},
             \\    }},
             \\}},
+            \\// and the pane floating over it:
+            \\.effects = &.{{ .backdrop_blur = .{{
+            \\    .radius = {d:.0}, .tint = .rgba(0x{x:0>8}),
+            \\}} }},
         , .{
             rgbOf(gradient_now.from), rgbOf(gradient_now.to), @mod(gradient_now.angle, 2 * std.math.pi),
             rgbaOf(shadow_now.color), shadow_now.offset[0],   shadow_now.offset[1],
-            shadow_now.blur,          shadow_now.spread,
+            shadow_now.blur,          shadow_now.spread,      frost_now.radius,
+            rgbaOf(frost_now.tint),
         }) catch "";
         ui.text(code, .{ .font = kit.mono_font, .size = 13 * shell.text_scale, .color = palette.muted, .wrap = .newlines });
     }

@@ -89,7 +89,7 @@ pub const Screen = enum {
             .robot_workshop => .{ .title = "Robot Workshop", .tagline = "An editor generated from a struct", .features = &.{ "zui_reflect", "widgets", "environment" }, .hue = 0.3 },
             .pixel_pad => .{ .title = "Pixel Pad", .tagline = "Pointer, keys, chords and typed text", .features = &.{ "pointerLocal", "chords", "keyEvents" }, .hue = 0.92 },
             .typography => .{ .title = "Typography", .tagline = "Six bitmap fonts, wrapping and spacing", .features = &.{ "wrap modes", "letter spacing", "zoom" }, .hue = 0.15 },
-            .light_and_depth => .{ .title = "Light & Depth", .tagline = "Gradients in OKLab, shadows and glow", .features = &.{ "Gradient", "Shadow", "glow" }, .hue = 0.75 },
+            .light_and_depth => .{ .title = "Light & Depth", .tagline = "Gradients in OKLab, shadows, glow and frost", .features = &.{ "Gradient", "Shadow", "BackdropBlur" }, .hue = 0.75 },
             .classic => .{ .title = "Classic", .tagline = "The showcase every zui backend shares", .features = &.{ "shared demo", "compare renderers" }, .hue = 0.7 },
         };
     }
