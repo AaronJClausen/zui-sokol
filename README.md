@@ -47,6 +47,7 @@ diagnostics, and the environment.
 | Pixel Pad | painting through `pointerLocal` on one element, tools on keys, undo with chords, and a live view of `keyEvents` and `typedText` |
 | Typography | the six bitmap fonts and the TrueType ones, size, letter spacing, line height, wrap and alignment, a column to drag-resize, and a marquee looped with `measureText` and `setScrollOffset` |
 | Light & Depth | `zui.Effects`: a card with a gradient and a shadow or glow, a frosted pane drifting over it, every field on a slider and its declaration printed as Zig; an elevation scale, pulsing glows, and a gradient blended in OKLab beside the same colors through `Color.mix` |
+| Transforms | `zui.Transform`: a card turned, moved and scaled about its origin from sliders, its declaration printed as Zig and its button pressed where it is drawn; turned tiles that hover and press where drawn; clock hands turned about their foot; the six bitmap fonts, turned |
 | Classic | `examples/showcase.zig`, the same UI as the zui-terminal demo, so the renderers can be compared |
 
 Ctrl+1 to Ctrl+0 jump to the first ten screens, Ctrl+PgDn and Ctrl+PgUp
@@ -61,7 +62,7 @@ costs live, and Tab moves focus.
 frame of a sokol_app window: `src/conformance.zig` reads each frame back
 with `glReadPixels` before the window presents it, so the suite checks
 every clip and fill, the image's tint and rounded corners, and a drawn
-gradient, shadow and backdrop blur, by their pixels. sokol_gfx cannot read a frame back, so
+gradient, shadow, backdrop blur and transform, by their pixels. sokol_gfx cannot read a frame back, so
 the suite always renders with OpenGL, whatever `-Dgl` says. CI runs it on
 Linux under `xvfb-run`, and it passes on Windows.
 
@@ -88,7 +89,8 @@ To move the pin, push the zui change and run
 | `gradient` | the rounded outline cut into bands at most 4 units long across the gradient (64 at most), each vertex colored by `colorAt`, so sokol_gl's sRGB blend between vertices stays within a step of zui's OKLab one |
 | `shadow` | the rounded box at the offset, grown by the spread, in the shadow's color, then six rings out to the blur, fading to clear along a smoothstep |
 | `backdrop_blur` | the frame is drawn into an offscreen target like the swapchain, and paused at each blur: a Gaussian along x, then along y, of what lies under the element, its edge pixels repeated, into RGBA16F targets; the frame resumes with the result drawn inside the rounded outline and the tint over it, and is copied to the swapchain at the end. A frame without one is drawn as before |
-| `clip_begin` / `clip_end` | `sg.applyScissorRect` per layer, at the record's `scale × zoom` |
+| `clip_begin` / `clip_end` | `sg.applyScissorRect` per layer, at the record's `scale × zoom`; inside a transform, the box around the clip in the window |
+| `transform_begin` / `transform_end` | sokol_gl's modelview matrix, loaded with the composed transform; a backdrop blur inside one blurs the box around it in the window and samples where it is drawn, and bitmap text inside one is drawn as sokol_gl quads from sokol_debugtext's own font bits, since sokol_debugtext has no matrix |
 | mouse and touch | `MOUSE_*` and `TOUCHES_*` events, in order; each touch is a pointer of its own |
 | wheel | `MOUSE_SCROLL` events, flipped and scaled by `InputCollector.wheel_step` |
 | keys | `KEY_DOWN` and `KEY_UP` with their modifiers, repeat flag and key code as the scancode; `CHAR` as text |
@@ -106,6 +108,11 @@ Current limits:
   most 16 elements; the rest draw their tint alone, counted in
   `Renderer.backdrop_blurs.lowered`, as do all of them on a GPU that
   cannot render, blend and filter RGBA16F.
+- **A turned clip cuts to the box around it.** A scissor rectangle is
+  upright, so a clip inside a rotated transform lets through what lies
+  between it and the box around it in the window; moved or scaled, it
+  cuts exactly. Transforms nest 64 deep; deeper ones are drawn as their
+  parent is, counted in `Renderer.transform_overflows`.
 - **A shadow is geometry, not a blur.** Its fade is drawn in rings, so a
   wide blur on a small box shows faint steps, and a translucent element
   shows its own shadow through it.
@@ -173,10 +180,11 @@ try renderer.zuiSubmit(host.zuiSurface(.main), frame);
 zui-host runs the tour this way: `zui_sokol_tour` exports the tour's
 application, so another loop can run it unchanged. `zui_sokol.config(...)` builds the
 `Config` from its declarations: `Text` is `zui_sokol.Text`, `ImageHandle`
-is `zui_sokol.Image`, the optional commands are `gradient`, `shadow` and
-`backdrop_blur`, and there is no `CustomData`, so the renderer's `switch`
-over the commands names exactly the base commands, `image`, `gradient`,
-`shadow` and `backdrop_blur`.
+is `zui_sokol.Image`, the optional commands are `gradient`, `shadow`,
+`backdrop_blur` and `transform`, and there is no `CustomData`, so the
+renderer's `switch` over the commands names exactly the base commands,
+`image`, `gradient`, `shadow`, `backdrop_blur`, `transform_begin` and
+`transform_end`.
 
 ## License
 

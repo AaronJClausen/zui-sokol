@@ -23,6 +23,7 @@ const Screens = struct {
     pixel_pad: @import("screens/pixel_pad.zig").PixelPad = .{},
     typography: @import("screens/typography.zig").Typography = .{},
     light_and_depth: @import("screens/light_and_depth.zig").LightAndDepth = .{},
+    transforms: @import("screens/transforms.zig").Transforms = .{},
     classic: showcase.Showcase(Ui) = .{ .title = "zui + sokol", .widgets = .{} },
 };
 

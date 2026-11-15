@@ -11,6 +11,8 @@ const Image = @import("root.zig").Image;
 const truetype = @import("truetype.zig");
 const GlyphAtlas = @import("glyph_atlas.zig").GlyphAtlas;
 const BackdropBlurs = @import("backdrop_blur.zig").BackdropBlurs;
+const bitmap_glyphs = @import("bitmap_glyphs.zig");
+const BitmapGlyphs = bitmap_glyphs.BitmapGlyphs;
 
 /// On Windows the renderer draws into a native host's window with a
 /// context of its own: a Direct3D 11 swapchain composed into the window,
@@ -29,9 +31,12 @@ const native = if (!draws_into_win32) struct {
 /// interleave in zui's paint order, and each layer is drawn under its own
 /// scissor rectangle. A frame with a backdrop blur is drawn offscreen and
 /// copied to the surface, so that the blur can sample what is beneath it.
+/// A transform is sokol_gl's modelview matrix; a clip inside one is
+/// scissored to the box around it in the window, which is larger than a
+/// turned clip.
 pub const Renderer = struct {
     pub const zui_surfaces: zui.SurfaceKinds = if (draws_into_win32) .initMany(&.{ .library, .win32 }) else .initOne(.library);
-    pub const zui_commands: zui.CommandSet = .initMany(&.{ .gradient, .shadow, .backdrop_blur });
+    pub const zui_commands: zui.CommandSet = .initMany(&.{ .gradient, .shadow, .backdrop_blur, .transform });
     pub const ImageHandle = Image;
 
     const max_layers = 1024;
@@ -61,6 +66,12 @@ pub const Renderer = struct {
     /// that did not fit were not drawn.
     glyph_overflows: u32 = 0,
     backdrop_blurs: BackdropBlurs = .{},
+    /// For bitmap text inside a transform, which sokol_debugtext cannot
+    /// draw transformed.
+    bitmap_glyphs: BitmapGlyphs = .{},
+    /// Times transforms nested deeper than the renderer keeps; the deeper
+    /// ones were drawn as their parent is.
+    transform_overflows: u32 = 0,
 
     /// Call after `sokol.gfx.setup`.
     pub fn init(text: *const Text) Renderer {
@@ -69,12 +80,7 @@ pub const Renderer = struct {
             .context = .{ .char_buf_size = 1 << 16, .max_commands = 1 << 14 },
             .logger = .{ .func = sokol.log.func },
         };
-        debugtext_desc.fonts[0] = sdtx.fontKc853();
-        debugtext_desc.fonts[1] = sdtx.fontKc854();
-        debugtext_desc.fonts[2] = sdtx.fontZ1013();
-        debugtext_desc.fonts[3] = sdtx.fontCpc();
-        debugtext_desc.fonts[4] = sdtx.fontC64();
-        debugtext_desc.fonts[5] = sdtx.fontOric();
+        debugtext_desc.fonts[0..bitmap_glyphs.font_count].* = bitmap_glyphs.fonts();
         sdtx.setup(debugtext_desc);
 
         var colors: [8]sg.ColorTargetState = @splat(.{});
@@ -112,6 +118,7 @@ pub const Renderer = struct {
 
     pub fn deinit(self: *Renderer) void {
         self.backdrop_blurs.deinit();
+        self.bitmap_glyphs.deinit();
         self.destroyGlyphTexture();
         if (self.glyph_texture.sampler.id != 0) sg.destroySampler(self.glyph_texture.sampler);
         if (self.glyphs) |atlas| std.heap.page_allocator.destroy(atlas);
@@ -182,6 +189,7 @@ pub const Renderer = struct {
         var recorder: LayerRecorder = .{ .renderer = self };
         recorder.begin();
         var clips: ClipStack = .{};
+        var transforms: TransformStack = .{};
         for (commands) |command| {
             const bounds = command.bounds;
             switch (command.payload) {
@@ -198,6 +206,9 @@ pub const Renderer = struct {
                 .text => |line| if (self.text.trueTypeFont(line.style.font)) |font| {
                     recorder.beginShapes();
                     if (self.glyphs) |atlas| drawTrueTypeText(atlas, self.glyph_texture, font, line.content, bounds, line.style, pixels_per_unit);
+                } else if (transforms.isActive()) {
+                    recorder.beginShapes();
+                    self.bitmap_glyphs.draw(line.content, bounds, line.style.font, self.text.glyphSize(line.style.size), line.style.letter_spacing, line.style.color);
                 } else {
                     recorder.beginText();
                     drawText(self.text, line.content, bounds, line.style, viewport);
@@ -218,10 +229,11 @@ pub const Renderer = struct {
                 },
                 .backdrop_blur => |blur| {
                     if (self.backdrop_blurs.ready) if (recorder.beginBackdropBlur()) |layer| {
-                        if (self.backdrop_blurs.record(bounds, blur.radius, viewport, layer)) {
+                        const to_window = transforms.current();
+                        if (self.backdrop_blurs.record(to_window.boundsOf(bounds), blur.radius, viewport, layer)) {
                             var outline: Outline = .{};
                             outline.trace(bounds, blur.corner_radius, .{}, self.corner_segments);
-                            self.backdrop_blurs.drawBlurred(outline.points[0..outline.count], centerOf(bounds), viewport);
+                            self.backdrop_blurs.drawBlurred(outline.points[0..outline.count], centerOf(bounds), to_window, viewport);
                         }
                     };
                     recorder.beginShapes();
@@ -229,12 +241,20 @@ pub const Renderer = struct {
                     if (self.composes_alpha) self.coverAlpha(recorder.layer, fillRectangle, .{ bounds, blur.corner_radius, blur.tint, self.corner_segments });
                 },
                 .clip_begin => |clip| {
-                    clips.push(clip);
+                    clips.push(if (transforms.isActive()) transforms.current().boundsOf(clip).intersect(clips.current() orelse wholeViewport(viewport)) else clip);
                     recorder.beginLayer(clips.current());
                 },
                 .clip_end => {
                     clips.pop();
                     recorder.beginLayer(clips.current());
+                },
+                .transform_begin => |transform| {
+                    if (!transforms.push(transform.affine(bounds))) self.transform_overflows += 1;
+                    loadModelview(transforms.current());
+                },
+                .transform_end => {
+                    transforms.pop();
+                    loadModelview(transforms.current());
                 },
             }
         }
@@ -267,7 +287,7 @@ pub const Renderer = struct {
 
     fn applyScissor(scissor: ?zui.Rect, params: zui.FrameParams) void {
         const dpi_scale = params.scale * params.zoom;
-        const rect = scissor orelse zui.Rect{ .x = 0, .y = 0, .width = params.viewport[0], .height = params.viewport[1] };
+        const rect = scissor orelse wholeViewport(params.viewport);
         sg.applyScissorRectf(rect.x * dpi_scale, rect.y * dpi_scale, rect.width * dpi_scale, rect.height * dpi_scale, true);
     }
 
@@ -429,6 +449,59 @@ const ClipStack = struct {
         }
     }
 };
+
+/// Each entry maps the units inside a transform to the window's, through
+/// every transform around it.
+const TransformStack = struct {
+    to_window: [64]zui.Affine = undefined,
+    depth: usize = 0,
+    overflow: usize = 0,
+
+    fn isActive(self: *const TransformStack) bool {
+        return self.depth > 0;
+    }
+
+    fn current(self: *const TransformStack) zui.Affine {
+        return if (self.depth == 0) .identity else self.to_window[self.depth - 1];
+    }
+
+    /// False when the stack is full, leaving `affine` unapplied.
+    fn push(self: *TransformStack, affine: zui.Affine) bool {
+        if (self.depth == self.to_window.len) {
+            self.overflow += 1;
+            return false;
+        }
+        self.to_window[self.depth] = self.current().after(affine);
+        self.depth += 1;
+        return true;
+    }
+
+    fn pop(self: *TransformStack) void {
+        if (self.overflow > 0) {
+            self.overflow -= 1;
+        } else if (self.depth > 0) {
+            self.depth -= 1;
+        }
+    }
+};
+
+fn loadModelview(affine: zui.Affine) void {
+    sgl.matrixModeModelview();
+    sgl.loadMatrix(&columnMajor(affine)[0]);
+}
+
+fn columnMajor(affine: zui.Affine) [16]f32 {
+    return .{
+        affine.x_axis[0], affine.x_axis[1], 0, 0,
+        affine.y_axis[0], affine.y_axis[1], 0, 0,
+        0,                0,                1, 0,
+        affine.offset[0], affine.offset[1], 0, 1,
+    };
+}
+
+fn wholeViewport(viewport: [2]f32) zui.Rect {
+    return .{ .x = 0, .y = 0, .width = viewport[0], .height = viewport[1] };
+}
 
 fn setColor(color: zui.Color) void {
     sgl.c4b(color.r, color.g, color.b, color.a);
@@ -761,6 +834,28 @@ test "a shadow's fade starts at its color and ends clear" {
     try std.testing.expectEqual(0, smoothstep(0));
     try std.testing.expectEqual(1, smoothstep(1));
     try std.testing.expectEqual(0.5, smoothstep(0.5));
+}
+
+test "nested transforms map to the window innermost first" {
+    var transforms: TransformStack = .{};
+    try std.testing.expect(transforms.push(.{ .offset = .{ 10, 0 } }));
+    try std.testing.expect(transforms.push(.{ .x_axis = .{ 0, 1 }, .y_axis = .{ -1, 0 } }));
+    try std.testing.expectEqual([2]f32{ 10, 2 }, transforms.current().apply(.{ 2, 0 }));
+    transforms.pop();
+    try std.testing.expectEqual([2]f32{ 12, 0 }, transforms.current().apply(.{ 2, 0 }));
+}
+
+test "a full transform stack keeps what fits and pops what it skipped first" {
+    var transforms: TransformStack = .{};
+    for (0..transforms.to_window.len) |_| try std.testing.expect(transforms.push(.{ .offset = .{ 1, 0 } }));
+    try std.testing.expect(!transforms.push(.{ .offset = .{ 1000, 0 } }));
+    transforms.pop();
+    try std.testing.expectEqual([2]f32{ 64, 0 }, transforms.current().apply(.{ 0, 0 }));
+}
+
+test "a column-major matrix carries the offset in its last column" {
+    const matrix = columnMajor(.{ .x_axis = .{ 2, 3 }, .y_axis = .{ 4, 5 }, .offset = .{ 6, 7 } });
+    try std.testing.expectEqualSlices(f32, &.{ 2, 3, 0, 0, 4, 5, 0, 0, 0, 0, 1, 0, 6, 7, 0, 1 }, &matrix);
 }
 
 test "outlines keep the same point count for any radius" {

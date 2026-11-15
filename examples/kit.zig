@@ -62,6 +62,7 @@ pub const Screen = enum {
     pixel_pad,
     typography,
     light_and_depth,
+    transforms,
     classic,
 
     pub const Info = struct {
@@ -90,6 +91,7 @@ pub const Screen = enum {
             .pixel_pad => .{ .title = "Pixel Pad", .tagline = "Pointer, keys, chords and typed text", .features = &.{ "pointerLocal", "chords", "keyEvents" }, .hue = 0.92 },
             .typography => .{ .title = "Typography", .tagline = "Six bitmap fonts, wrapping and spacing", .features = &.{ "wrap modes", "letter spacing", "zoom" }, .hue = 0.15 },
             .light_and_depth => .{ .title = "Light & Depth", .tagline = "Gradients in OKLab, shadows, glow and frost", .features = &.{ "Gradient", "Shadow", "BackdropBlur" }, .hue = 0.75 },
+            .transforms => .{ .title = "Transforms", .tagline = "Moved, scaled and turned as painted, hit where drawn", .features = &.{ "Transform", "hit inversion", "origin" }, .hue = 0.5 },
             .classic => .{ .title = "Classic", .tagline = "The showcase every zui backend shares", .features = &.{ "shared demo", "compare renderers" }, .hue = 0.7 },
         };
     }
@@ -332,6 +334,16 @@ pub const Shell = struct {
             .decoration = .{ .background = color.mix(self.palette.surface, 0.8), .border = .{ .color = color, .widths = .all(1) }, .corner_radius = .all(10) },
         });
         self.labelColored(ui, .caption, color, content);
+        ui.close();
+    }
+
+    /// A labeled slider with its value printed in `format` beside it.
+    pub fn sliderRow(self: *const Shell, ui: *Ui, id: zui.Id, name: []const u8, value: *f32, minimum: f64, maximum: f64, step: f64, comptime format: []const u8) void {
+        self.widgets.labeledRow(ui, name);
+        defer ui.close();
+        _ = self.widgets.slider(ui, id, value, .{ .min = minimum, .max = maximum, .step = step });
+        ui.open(.{ .layout = .{ .sizing = .{ .width = .fixed(40) }, .child_alignment = .{ .x = .end } } });
+        self.print(ui, .caption, format, .{value.*});
         ui.close();
     }
 

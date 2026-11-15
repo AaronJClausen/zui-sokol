@@ -77,24 +77,24 @@ pub const LightAndDepth = struct {
         shell.labelColored(ui, .body, shell.palette.accent, "shadow");
         _ = widgets.checkbox(ui, .of("depth.glow"), "glow: no offset, the accent color", &self.glow, .{});
         if (!self.glow) {
-            sliderRow(ui, shell, .of("depth.offset_x"), "offset x", &self.offset[0], -40, 40, 1, "{d:.0}");
-            sliderRow(ui, shell, .of("depth.offset_y"), "offset y", &self.offset[1], -40, 40, 1, "{d:.0}");
+            shell.sliderRow(ui, .of("depth.offset_x"), "offset x", &self.offset[0], -40, 40, 1, "{d:.0}");
+            shell.sliderRow(ui, .of("depth.offset_y"), "offset y", &self.offset[1], -40, 40, 1, "{d:.0}");
         }
-        sliderRow(ui, shell, .of("depth.blur"), "blur", &self.blur, 0, 80, 1, "{d:.0}");
-        sliderRow(ui, shell, .of("depth.spread"), "spread", &self.spread, -20, 30, 1, "{d:.0}");
-        sliderRow(ui, shell, .of("depth.opacity"), "opacity", &self.shadow_opacity, 0, 1, 0.05, "{d:.2}");
+        shell.sliderRow(ui, .of("depth.blur"), "blur", &self.blur, 0, 80, 1, "{d:.0}");
+        shell.sliderRow(ui, .of("depth.spread"), "spread", &self.spread, -20, 30, 1, "{d:.0}");
+        shell.sliderRow(ui, .of("depth.opacity"), "opacity", &self.shadow_opacity, 0, 1, 0.05, "{d:.2}");
         shell.divider(ui);
         shell.labelColored(ui, .body, shell.palette.accent, "gradient");
-        sliderRow(ui, shell, .of("depth.angle"), "angle", &self.angle_degrees, 0, 360, 1, "{d:.0}");
-        sliderRow(ui, shell, .of("depth.from"), "from hue", &self.from_hue, 0, 1, 0.01, "{d:.2}");
-        sliderRow(ui, shell, .of("depth.to"), "to hue", &self.to_hue, 0, 1, 0.01, "{d:.2}");
+        shell.sliderRow(ui, .of("depth.angle"), "angle", &self.angle_degrees, 0, 360, 1, "{d:.0}");
+        shell.sliderRow(ui, .of("depth.from"), "from hue", &self.from_hue, 0, 1, 0.01, "{d:.2}");
+        shell.sliderRow(ui, .of("depth.to"), "to hue", &self.to_hue, 0, 1, 0.01, "{d:.2}");
         _ = widgets.checkbox(ui, .of("depth.animate"), "turn the gradient, drift the frost, pulse the glows", &self.animate, .{});
         shell.divider(ui);
         shell.labelColored(ui, .body, shell.palette.accent, "backdrop blur");
-        sliderRow(ui, shell, .of("depth.frost_blur"), "blur", &self.frost_blur, 0, 40, 1, "{d:.0}");
-        sliderRow(ui, shell, .of("depth.frost_opacity"), "tint", &self.frost_opacity, 0, 1, 0.05, "{d:.2}");
+        shell.sliderRow(ui, .of("depth.frost_blur"), "blur", &self.frost_blur, 0, 40, 1, "{d:.0}");
+        shell.sliderRow(ui, .of("depth.frost_opacity"), "tint", &self.frost_opacity, 0, 1, 0.05, "{d:.2}");
         shell.divider(ui);
-        sliderRow(ui, shell, .of("depth.radius"), "corner radius", &self.corner_radius, 0, 80, 1, "{d:.0}");
+        shell.sliderRow(ui, .of("depth.radius"), "corner radius", &self.corner_radius, 0, 80, 1, "{d:.0}");
         shell.label(ui, .caption, "Every effect takes its element's corner radius. The renderer declares .gradient, .shadow and .backdrop_blur; one that does not gets the gradient as its middle color, no shadow, and the frost as its tint alone.");
         if (widgets.button(ui, .of("depth.reset"), "Reset", .{})) self.* = .{};
     }
@@ -221,13 +221,4 @@ fn rgbOf(color: zui.Color) u32 {
 
 fn rgbaOf(color: zui.Color) u32 {
     return rgbOf(color) << 8 | color.a;
-}
-
-fn sliderRow(ui: *Ui, shell: *const Shell, id: zui.Id, name: []const u8, value: *f32, minimum: f64, maximum: f64, step: f64, comptime format: []const u8) void {
-    shell.widgets.labeledRow(ui, name);
-    defer ui.close();
-    _ = shell.widgets.slider(ui, id, value, .{ .min = minimum, .max = maximum, .step = step });
-    ui.open(.{ .layout = .{ .sizing = .{ .width = .fixed(40) }, .child_alignment = .{ .x = .end } } });
-    shell.print(ui, .caption, format, .{value.*});
-    ui.close();
 }

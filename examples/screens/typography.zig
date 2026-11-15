@@ -59,16 +59,16 @@ pub const Typography = struct {
         widgets.labeledRow(ui, "font");
         _ = widgets.dropdown(ui, .of("type.font"), &self.font, &font_names, .{ .width = .grow });
         ui.close();
-        sliderRow(ui, shell, .of("type.size"), "size", &self.size, 8, 72, 1, "{d:.0}");
-        sliderRow(ui, shell, .of("type.spacing"), "letter spacing", &self.letter_spacing, -3, 16, 0.5, "{d:.1}");
-        sliderRow(ui, shell, .of("type.line_height"), "line height", &self.line_height, 0, 96, 1, "{d:.0}");
+        shell.sliderRow(ui, .of("type.size"), "size", &self.size, 8, 72, 1, "{d:.0}");
+        shell.sliderRow(ui, .of("type.spacing"), "letter spacing", &self.letter_spacing, -3, 16, 0.5, "{d:.1}");
+        shell.sliderRow(ui, .of("type.line_height"), "line height", &self.line_height, 0, 96, 1, "{d:.0}");
         widgets.labeledRow(ui, "wrap");
         _ = widgets.dropdownEnum(ui, .of("type.wrap"), &self.wrap, .{ .width = .grow });
         ui.close();
         widgets.labeledRow(ui, "alignment");
         _ = widgets.dropdownEnum(ui, .of("type.alignment"), &self.alignment, .{ .width = .grow });
         ui.close();
-        sliderRow(ui, shell, .of("type.marquee_speed"), "marquee speed", &self.marquee_speed, 0, 400, 10, "{d:.0}");
+        shell.sliderRow(ui, .of("type.marquee_speed"), "marquee speed", &self.marquee_speed, 0, 400, 10, "{d:.0}");
         shell.divider(ui);
         shell.label(ui, .caption, "line height 0 means whatever the text contract measures. Letter spacing goes through the measure key, so differently spaced runs never share a cache entry.");
         const measured = ui.measureText("zui", self.style(shell));
@@ -152,12 +152,3 @@ pub const Typography = struct {
         }
     }
 };
-
-fn sliderRow(ui: *Ui, shell: *const Shell, id: zui.Id, name: []const u8, value: *f32, minimum: f64, maximum: f64, step: f64, comptime format: []const u8) void {
-    shell.widgets.labeledRow(ui, name);
-    defer ui.close();
-    _ = shell.widgets.slider(ui, id, value, .{ .min = minimum, .max = maximum, .step = step });
-    ui.open(.{ .layout = .{ .sizing = .{ .width = .fixed(40) }, .child_alignment = .{ .x = .end } } });
-    shell.print(ui, .caption, format, .{value.*});
-    ui.close();
-}

@@ -18,8 +18,8 @@ pub const Image = struct {
 };
 
 /// A `zui.Config` for `Renderer`: text measured by `Text`, images that are
-/// `Image`s, and exactly the commands `Renderer` draws, gradients, shadows
-/// and backdrop blurs among them. Override any other field:
+/// `Image`s, and exactly the commands `Renderer` draws, gradients, shadows,
+/// backdrop blurs and transforms among them. Override any other field:
 /// `zui.Context(zui_sokol.config(.{ .limits = .{ .max_elements = 8192 } }))`.
 pub fn config(overrides: zui.Config) zui.Config {
     comptime zui.checkRenderer(Renderer);
@@ -138,10 +138,11 @@ test "config makes images sokol textures and text debugtext's" {
     try std.testing.expectEqual(@as(u32, 128), derived.limits.max_elements);
 }
 
-test "the renderer draws the base commands, images, gradients, shadows and backdrop blurs, into sokol_app's swapchain" {
+test "the renderer draws the base commands, images, gradients, shadows, backdrop blurs and transforms, into sokol_app's swapchain" {
     const Ui = zui.Context(config(.{ .limits = .{ .max_elements = 8 } }));
-    try std.testing.expectEqual(9, @typeInfo(Ui.RenderCommand.Payload).@"union".fields.len);
-    try std.testing.expect(@hasField(Ui.RenderCommand.Payload, "gradient") and @hasField(Ui.RenderCommand.Payload, "shadow") and @hasField(Ui.RenderCommand.Payload, "backdrop_blur"));
+    const Payload = Ui.RenderCommand.Payload;
+    try std.testing.expectEqual(11, @typeInfo(Payload).@"union".fields.len);
+    inline for (.{ "gradient", "shadow", "backdrop_blur", "transform_begin", "transform_end" }) |optional| try std.testing.expect(@hasField(Payload, optional));
     var text: Text = .{};
     var ui = try Ui.init(std.testing.allocator, std.testing.io, &text);
     defer ui.deinit(std.testing.allocator);
@@ -161,6 +162,7 @@ test {
     _ = @import("input.zig");
     _ = @import("renderer.zig");
     _ = @import("backdrop_blur.zig");
+    _ = @import("bitmap_glyphs.zig");
     _ = @import("truetype.zig");
     _ = @import("glyph_atlas.zig");
 }

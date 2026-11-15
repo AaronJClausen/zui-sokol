@@ -91,16 +91,16 @@ pub const BackdropBlurs = struct {
         self.ready = true;
     }
 
-    /// Records the two passes that blur what lies under `bounds`, to run
+    /// Records the two passes that blur what lies under `window_bounds`, to run
     /// before scene layer `layer`. Returns false, recording nothing, when
     /// the frame cannot blur or has no room left for this blur.
-    pub fn record(self: *BackdropBlurs, bounds: zui.Rect, radius: f32, viewport: [2]f32, layer: usize) bool {
+    pub fn record(self: *BackdropBlurs, window_bounds: zui.Rect, radius: f32, viewport: [2]f32, layer: usize) bool {
         if (!self.ready or self.count == max_per_frame) {
             self.lowered += 1;
             return false;
         }
         const pixels_per_unit = self.pixelsPerUnit(viewport);
-        const region: PixelRegion = .covering(bounds, pixels_per_unit, self.size);
+        const region: PixelRegion = .covering(window_bounds, pixels_per_unit, self.size);
         if (region.isEmpty()) return false;
         const taps: Taps = .gaussian(radius * pixels_per_unit[0]);
         const vertices_per_tap = 2 * 3 * 6;
@@ -174,8 +174,9 @@ pub const BackdropBlurs = struct {
     }
 
     /// In sokol_gl's default context, into the current layer: the last
-    /// recorded blur, filling `outline` as a fan from `center`.
-    pub fn drawBlurred(self: *const BackdropBlurs, outline: []const [2]f32, center: [2]f32, viewport: [2]f32) void {
+    /// recorded blur, filling `outline` as a fan from `center`, both in
+    /// units that `to_window` maps to the window's.
+    pub fn drawBlurred(self: *const BackdropBlurs, outline: []const [2]f32, center: [2]f32, to_window: zui.Affine, viewport: [2]f32) void {
         const pixels_per_unit = self.pixelsPerUnit(viewport);
         const size: [2]f32 = .{ @floatFromInt(self.size[0]), @floatFromInt(self.size[1]) };
         sgl.pushPipeline();
@@ -186,7 +187,8 @@ pub const BackdropBlurs = struct {
         sgl.beginTriangles();
         for (0..outline.len) |index| {
             for ([3][2]f32{ center, outline[index], outline[(index + 1) % outline.len] }) |point| {
-                sgl.v2fT2f(point[0], point[1], point[0] * pixels_per_unit[0] / size[0], self.textureRow(point[1] * pixels_per_unit[1] / size[1]));
+                const in_window = to_window.apply(point);
+                sgl.v2fT2f(point[0], point[1], in_window[0] * pixels_per_unit[0] / size[0], self.textureRow(in_window[1] * pixels_per_unit[1] / size[1]));
             }
         }
         sgl.end();
