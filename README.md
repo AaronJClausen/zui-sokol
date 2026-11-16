@@ -65,6 +65,8 @@ with `glReadPixels` before the window presents it, so the suite checks
 every clip and fill, the image's tint and rounded corners, and a drawn
 gradient, shadow, backdrop blur, transform and material, by their pixels.
 The harness's material is `Material.solid`, drawn through the shader.
+The suite declares its scene in `zui.ExtendedColor`, HDR white among it,
+and checks that each color is encoded as `ExtendedColor.toColor` does.
 sokol_gfx cannot read a frame back, so
 the suite always renders with OpenGL, whatever `-Dgl` says. CI runs it on
 Linux under `xvfb-run`, and it passes on Windows.
@@ -98,6 +100,7 @@ Metal, so building zui-sokol never runs it. After changing the GLSL, run
 | `shadow` | the rounded box at the offset, grown by the spread, in the shadow's color, then six rings out to the blur, fading to clear along a smoothstep |
 | `backdrop_blur` | the frame is drawn into an offscreen target like the swapchain, and paused at each blur: a Gaussian along x, then along y, of what lies under the element, its edge pixels repeated, into RGBA16F targets; the frame resumes with the result drawn inside the rounded outline and the tint over it, and is copied to the swapchain at the end. A frame without one is drawn as before |
 | `material` | `zui_sokol.Material`, a pattern between two colors (`solid`, `sheen`, `aurora`) moved by its phase: the rounded outline as a triangle fan, drawn by the material shader at the start of its own layer, before the layer's sokol_gl shapes. The shader and pipeline are made on the first frame with a material |
+| colors | `zui.ExtendedColor` (the renderer declares `zui_extended_color`) or `zui.Color`, as the application declares them; an extended color is clamped into SDR and sRGB's gamut and encoded to 8 bits, as `ExtendedColor.toColor` does, since the target is 8-bit sRGB |
 | `clip_begin` / `clip_end` | `sg.applyScissorRect` per layer, at the record's `scale × zoom`; inside a transform, the box around the clip in the window |
 | `transform_begin` / `transform_end` | sokol_gl's modelview matrix, loaded with the composed transform; a backdrop blur inside one blurs the box around it in the window and samples where it is drawn, and bitmap text inside one is drawn as sokol_gl quads from sokol_debugtext's own font bits, since sokol_debugtext has no matrix |
 | mouse and touch | `MOUSE_*` and `TOUCHES_*` events, in order; each touch is a pointer of its own |
@@ -196,7 +199,8 @@ application, so another loop can run it unchanged. `zui_sokol.config(...)` build
 `Config` from its declarations: `Text` is `zui_sokol.Text`, `ImageHandle`
 is `zui_sokol.Image`, `MaterialHandle` is `zui_sokol.Material`, the
 optional commands are `gradient`, `shadow`, `backdrop_blur`, `transform`
-and `material`, and there is no `CustomData`, so the renderer's `switch`
+and `material`, the renderer draws extended colors (`Config.Color` may be
+`zui.ExtendedColor` or `zui.Color`), and there is no `CustomData`, so the renderer's `switch`
 over the commands names exactly the base commands, `image`, `gradient`,
 `shadow`, `backdrop_blur`, `transform_begin`, `transform_end` and
 `material`. A context with a `MaterialHandle` has its own element types,

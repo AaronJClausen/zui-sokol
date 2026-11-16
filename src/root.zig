@@ -21,13 +21,16 @@ pub const Image = struct {
 /// A `zui.Config` for `Renderer`: text measured by `Text`, images that are
 /// `Image`s, materials that are `Material`s, and exactly the commands
 /// `Renderer` draws, gradients, shadows, backdrop blurs, transforms and
-/// materials among them. Override any other field:
-/// `zui.Context(zui_sokol.config(.{ .limits = .{ .max_elements = 8192 } }))`.
+/// materials among them. The renderer draws `zui.ExtendedColor`, encoded
+/// into its 8-bit sRGB target, so an application may declare its colors in
+/// either. Override any other field:
+/// `zui.Context(zui_sokol.config(.{ .Color = zui.ExtendedColor, .limits = .{ .max_elements = 8192 } }))`.
 pub fn config(overrides: zui.Config) zui.Config {
     comptime zui.checkRenderer(Renderer);
     var result = overrides;
     result.Text = Text;
     result.commands = Renderer.zui_commands;
+    result.extended_color = Renderer.zui_extended_color;
     result.ImageHandle = Renderer.ImageHandle;
     result.CustomData = void;
     result.MaterialHandle = Renderer.MaterialHandle;

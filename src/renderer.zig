@@ -41,6 +41,7 @@ const native = if (!draws_into_win32) struct {
 pub const Renderer = struct {
     pub const zui_surfaces: zui.SurfaceKinds = if (draws_into_win32) .initMany(&.{ .library, .win32 }) else .initOne(.library);
     pub const zui_commands: zui.CommandSet = .initMany(&.{ .gradient, .shadow, .backdrop_blur, .transform, .material });
+    pub const zui_extended_color = true;
     pub const ImageHandle = Image;
     pub const MaterialHandle = Material;
 
@@ -204,27 +205,29 @@ pub const Renderer = struct {
             switch (command.payload) {
                 .rectangle => |rectangle| {
                     recorder.beginShapes();
-                    fillRectangle(bounds, rectangle.corner_radius, rectangle.color, self.corner_segments);
-                    if (self.composes_alpha) self.coverAlpha(recorder.layer, fillRectangle, .{ bounds, rectangle.corner_radius, rectangle.color, self.corner_segments });
+                    const color = sdrColor(rectangle.color);
+                    fillRectangle(bounds, rectangle.corner_radius, color, self.corner_segments);
+                    if (self.composes_alpha) self.coverAlpha(recorder.layer, fillRectangle, .{ bounds, rectangle.corner_radius, color, self.corner_segments });
                 },
                 .border => |border| {
                     recorder.beginShapes();
-                    strokeBorder(bounds, border.widths, border.corner_radius, border.color, self.corner_segments);
-                    if (self.composes_alpha) self.coverAlpha(recorder.layer, strokeBorder, .{ bounds, border.widths, border.corner_radius, border.color, self.corner_segments });
+                    const color = sdrColor(border.color);
+                    strokeBorder(bounds, border.widths, border.corner_radius, color, self.corner_segments);
+                    if (self.composes_alpha) self.coverAlpha(recorder.layer, strokeBorder, .{ bounds, border.widths, border.corner_radius, color, self.corner_segments });
                 },
                 .text => |line| if (self.text.trueTypeFont(line.style.font)) |font| {
                     recorder.beginShapes();
                     if (self.glyphs) |atlas| drawTrueTypeText(atlas, self.glyph_texture, font, line.content, bounds, line.style, pixels_per_unit);
                 } else if (transforms.isActive()) {
                     recorder.beginShapes();
-                    self.bitmap_glyphs.draw(line.content, bounds, line.style.font, self.text.glyphSize(line.style.size), line.style.letter_spacing, line.style.color);
+                    self.bitmap_glyphs.draw(line.content, bounds, line.style.font, self.text.glyphSize(line.style.size), line.style.letter_spacing, sdrColor(line.style.color));
                 } else {
                     recorder.beginText();
                     drawText(self.text, line.content, bounds, line.style, viewport);
                 },
                 .image => |image| {
                     recorder.beginShapes();
-                    drawImage(image.handle, bounds, image.tint, image.corner_radius, self.corner_segments);
+                    drawImage(image.handle, bounds, sdrColor(image.tint), image.corner_radius, self.corner_segments);
                 },
                 .gradient => |gradient| {
                     recorder.beginShapes();
@@ -246,13 +249,15 @@ pub const Renderer = struct {
                         }
                     };
                     recorder.beginShapes();
-                    fillRectangle(bounds, blur.corner_radius, blur.tint, self.corner_segments);
-                    if (self.composes_alpha) self.coverAlpha(recorder.layer, fillRectangle, .{ bounds, blur.corner_radius, blur.tint, self.corner_segments });
+                    const tint = sdrColor(blur.tint);
+                    fillRectangle(bounds, blur.corner_radius, tint, self.corner_segments);
+                    if (self.composes_alpha) self.coverAlpha(recorder.layer, fillRectangle, .{ bounds, blur.corner_radius, tint, self.corner_segments });
                 },
                 .material => |material| if (!self.recordMaterial(&recorder, material, bounds, transforms.current(), viewport)) {
                     recorder.beginShapes();
-                    fillRectangle(bounds, material.corner_radius, material.fallback, self.corner_segments);
-                    if (self.composes_alpha) self.coverAlpha(recorder.layer, fillRectangle, .{ bounds, material.corner_radius, material.fallback, self.corner_segments });
+                    const fallback = sdrColor(material.fallback);
+                    fillRectangle(bounds, material.corner_radius, fallback, self.corner_segments);
+                    if (self.composes_alpha) self.coverAlpha(recorder.layer, fillRectangle, .{ bounds, material.corner_radius, fallback, self.corner_segments });
                 },
                 .clip_begin => |clip| {
                     clips.push(if (transforms.isActive()) transforms.current().boundsOf(clip).intersect(clips.current() orelse wholeViewport(viewport)) else clip);
@@ -561,6 +566,12 @@ fn setColor(color: zui.Color) void {
     sgl.c4b(color.r, color.g, color.b, color.a);
 }
 
+/// The commands carry `zui.ExtendedColor` when the application declares
+/// its colors in it, and `zui.Color` otherwise.
+fn sdrColor(color: anytype) zui.Color {
+    return if (@TypeOf(color) == zui.ExtendedColor) color.toColor() else color;
+}
+
 fn hasRoundedCorners(radius: zui.CornerRadius) bool {
     return radius.top_left > 0 or radius.top_right > 0 or radius.bottom_left > 0 or radius.bottom_right > 0;
 }
@@ -628,7 +639,7 @@ fn fillGradient(bounds: zui.Rect, gradient: anytype, corner_segments: u8) void {
         const first = band_polygon.points[0];
         for (1..band_polygon.count - 1) |index| {
             for ([3][2]f32{ first, band_polygon.points[index], band_polygon.points[index + 1] }) |point| {
-                const color = gradient.colorAt(bounds, point);
+                const color = sdrColor(gradient.colorAt(bounds, point));
                 sgl.v2fC4b(point[0], point[1], color.r, color.g, color.b, color.a);
             }
         }
@@ -674,19 +685,20 @@ fn drawShadow(bounds: zui.Rect, shadow: anytype, corner_segments: u8) void {
     const spread = @max(shadow.spread, -@min(caster.width, caster.height) / 2);
     var inner: Outline = .{};
     inner.trace(caster, shadow.corner_radius, .all(-spread), corner_segments);
-    setColor(shadow.color);
+    const shadow_color = sdrColor(shadow.color);
+    setColor(shadow_color);
     fillOutline(&inner, centerOf(caster));
     if (shadow.blur <= 0) return;
 
-    var inner_alpha = shadow.color.a;
+    var inner_alpha = shadow_color.a;
     sgl.beginTriangles();
     for (1..shadow_fade_rings + 1) |ring| {
         const reached = @as(f32, @floatFromInt(ring)) / shadow_fade_rings;
         var outer: Outline = .{};
         outer.trace(caster, shadow.corner_radius, .all(-(spread + shadow.blur * reached)), corner_segments);
-        const outer_alpha: u8 = @intFromFloat(@round(@as(f32, @floatFromInt(shadow.color.a)) * (1 - smoothstep(reached))));
-        const inner_color: zui.Color = .{ .r = shadow.color.r, .g = shadow.color.g, .b = shadow.color.b, .a = inner_alpha };
-        const outer_color: zui.Color = .{ .r = shadow.color.r, .g = shadow.color.g, .b = shadow.color.b, .a = outer_alpha };
+        const outer_alpha: u8 = @intFromFloat(@round(@as(f32, @floatFromInt(shadow_color.a)) * (1 - smoothstep(reached))));
+        const inner_color: zui.Color = .{ .r = shadow_color.r, .g = shadow_color.g, .b = shadow_color.b, .a = inner_alpha };
+        const outer_color: zui.Color = .{ .r = shadow_color.r, .g = shadow_color.g, .b = shadow_color.b, .a = outer_alpha };
         for (0..outer.count) |index| {
             const next = (index + 1) % outer.count;
             for ([6]struct { [2]f32, zui.Color }{
@@ -786,7 +798,8 @@ fn drawText(text: *const Text, content: []const u8, bounds: zui.Rect, style: any
     const canvas_scale = 8 / glyph_size;
     sdtx.canvas(viewport[0] * canvas_scale, viewport[1] * canvas_scale);
     sdtx.font(@min(style.font, 5));
-    sdtx.color4b(style.color.r, style.color.g, style.color.b, style.color.a);
+    const color = sdrColor(style.color);
+    sdtx.color4b(color.r, color.g, color.b, color.a);
     const row = (bounds.y + (bounds.height - glyph_size) / 2) / glyph_size;
     const glyph_pitch = (glyph_size + style.letter_spacing) / glyph_size;
     sdtx.pos(bounds.x / glyph_size, row);
@@ -821,7 +834,7 @@ fn drawTrueTypeText(atlas: *const GlyphAtlas, texture: Image, font: *const truet
 
     sgl.enableTexture();
     sgl.texture(texture.view, texture.sampler);
-    setColor(style.color);
+    setColor(sdrColor(style.color));
     sgl.beginQuads();
     var pen = bounds.x;
     var codepoints = truetype.Codepoints.init(content);
@@ -882,6 +895,12 @@ test "a band of a square is the strip between its two cuts" {
     band.cut(past_start.points[0..past_start.count], .{ 5, 5 }, .{ -1, 0 }, -1);
     try std.testing.expectEqual(4, band.count);
     for (band.points[0..band.count]) |point| try std.testing.expect(point[0] == 4 or point[0] == 6);
+}
+
+test "an extended color is clamped into the SDR target, and a color is drawn as declared" {
+    try std.testing.expectEqual(zui.Color.white, sdrColor(zui.ExtendedColor.linear(4, 4, 4, 1)));
+    try std.testing.expectEqual(zui.Color.rgb(0x3366ff), sdrColor(zui.ExtendedColor.rgb(0x3366ff)));
+    try std.testing.expectEqual(zui.Color.rgb(0x3366ff), sdrColor(zui.Color.rgb(0x3366ff)));
 }
 
 test "a shadow's fade starts at its color and ends clear" {
