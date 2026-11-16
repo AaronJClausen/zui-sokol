@@ -11,6 +11,9 @@ const Image = @import("root.zig").Image;
 const truetype = @import("truetype.zig");
 const GlyphAtlas = @import("glyph_atlas.zig").GlyphAtlas;
 const BackdropBlurs = @import("backdrop_blur.zig").BackdropBlurs;
+const materials = @import("materials.zig");
+const Material = materials.Material;
+const Materials = materials.Materials;
 const bitmap_glyphs = @import("bitmap_glyphs.zig");
 const BitmapGlyphs = bitmap_glyphs.BitmapGlyphs;
 
@@ -33,11 +36,13 @@ const native = if (!draws_into_win32) struct {
 /// copied to the surface, so that the blur can sample what is beneath it.
 /// A transform is sokol_gl's modelview matrix; a clip inside one is
 /// scissored to the box around it in the window, which is larger than a
-/// turned clip.
+/// turned clip. A material is drawn by its own shader at the start of a
+/// layer, before the layer's shapes.
 pub const Renderer = struct {
     pub const zui_surfaces: zui.SurfaceKinds = if (draws_into_win32) .initMany(&.{ .library, .win32 }) else .initOne(.library);
-    pub const zui_commands: zui.CommandSet = .initMany(&.{ .gradient, .shadow, .backdrop_blur, .transform });
+    pub const zui_commands: zui.CommandSet = .initMany(&.{ .gradient, .shadow, .backdrop_blur, .transform, .material });
     pub const ImageHandle = Image;
+    pub const MaterialHandle = Material;
 
     const max_layers = 1024;
     const present_layer = 2 * max_layers;
@@ -72,6 +77,7 @@ pub const Renderer = struct {
     /// Times transforms nested deeper than the renderer keeps; the deeper
     /// ones were drawn as their parent is.
     transform_overflows: u32 = 0,
+    materials: Materials = .{},
 
     /// Call after `sokol.gfx.setup`.
     pub fn init(text: *const Text) Renderer {
@@ -118,6 +124,7 @@ pub const Renderer = struct {
 
     pub fn deinit(self: *Renderer) void {
         self.backdrop_blurs.deinit();
+        self.materials.deinit();
         self.bitmap_glyphs.deinit();
         self.destroyGlyphTexture();
         if (self.glyph_texture.sampler.id != 0) sg.destroySampler(self.glyph_texture.sampler);
@@ -155,7 +162,9 @@ pub const Renderer = struct {
         var action: sg.PassAction = .{};
         action.colors[0] = .{ .load_action = .CLEAR, .clear_value = clear_value };
         self.backdrop_blurs.prepare(frame.commands(), .{ swapchain.width, swapchain.height });
+        self.materials.prepare(frame.commands());
         const layer_count = self.record(frame.commands(), frame.params);
+        self.materials.upload();
         if (self.backdrop_blurs.count == 0) {
             sg.beginPass(.{ .action = action, .swapchain = swapchain });
             self.replay(layer_count, frame.params, clear_value);
@@ -240,6 +249,11 @@ pub const Renderer = struct {
                     fillRectangle(bounds, blur.corner_radius, blur.tint, self.corner_segments);
                     if (self.composes_alpha) self.coverAlpha(recorder.layer, fillRectangle, .{ bounds, blur.corner_radius, blur.tint, self.corner_segments });
                 },
+                .material => |material| if (!self.recordMaterial(&recorder, material, bounds, transforms.current(), viewport)) {
+                    recorder.beginShapes();
+                    fillRectangle(bounds, material.corner_radius, material.fallback, self.corner_segments);
+                    if (self.composes_alpha) self.coverAlpha(recorder.layer, fillRectangle, .{ bounds, material.corner_radius, material.fallback, self.corner_segments });
+                },
                 .clip_begin => |clip| {
                     clips.push(if (transforms.isActive()) transforms.current().boundsOf(clip).intersect(clips.current() orelse wholeViewport(viewport)) else clip);
                     recorder.beginLayer(clips.current());
@@ -263,6 +277,27 @@ pub const Renderer = struct {
         return recorder.layer + 1;
     }
 
+    /// False when the material is to be drawn as its fallback: the backend
+    /// cannot draw it, or the frame has no layer or room left for it.
+    fn recordMaterial(self: *Renderer, recorder: *LayerRecorder, material: anytype, bounds: zui.Rect, to_window: zui.Affine, viewport: [2]f32) bool {
+        if (!self.materials.isReady()) {
+            self.materials.lowered += 1;
+            return false;
+        }
+        const layer = recorder.beginMaterial() orelse {
+            self.materials.lowered += 1;
+            return false;
+        };
+        var outline: Outline = .{};
+        outline.trace(bounds, material.corner_radius, .{}, self.corner_segments);
+        if (!self.materials.record(material.handle, outline.points[0..outline.count], bounds, to_window, viewport, layer)) return false;
+        if (self.composes_alpha) {
+            const coverage: zui.Color = .{ .r = 0, .g = 0, .b = 0, .a = material.handle.opacity() };
+            self.coverAlpha(layer, fillRectangle, .{ bounds, material.corner_radius, coverage, self.corner_segments });
+        }
+        return true;
+    }
+
     /// Draws the recorded layers in the current pass, which is the scene's
     /// when the frame has backdrop blurs: it ends before each blur's
     /// passes, and the scene's resumes after them.
@@ -276,6 +311,7 @@ pub const Renderer = struct {
                 sg.beginPass(self.backdrop_blurs.scenePass(.LOAD, clear_value));
             }
             applyScissor(scissor, params);
+            self.materials.replayBefore(layer);
             sgl.drawLayer(@intCast(layer));
             sdtx.drawLayer(@intCast(layer));
         }
@@ -371,6 +407,7 @@ pub const Renderer = struct {
 const LayerRecorder = struct {
     renderer: *Renderer,
     layer: usize = 0,
+    has_materials: bool = false,
     has_shapes: bool = false,
     has_text: bool = false,
 
@@ -395,7 +432,7 @@ const LayerRecorder = struct {
     /// layer that its passes run before. Returns that layer, or null when
     /// no layer is left.
     fn beginBackdropBlur(self: *LayerRecorder) ?usize {
-        if (self.has_shapes or self.has_text) {
+        if (self.isUsed()) {
             if (self.layer + 1 == Renderer.max_layers) return null;
             self.beginLayer(self.renderer.layer_scissors[self.layer]);
         }
@@ -403,8 +440,24 @@ const LayerRecorder = struct {
         return self.layer;
     }
 
+    /// Materials replay before their layer's shapes and text, so one that
+    /// follows either starts a layer. Returns that layer, or null when no
+    /// layer is left.
+    fn beginMaterial(self: *LayerRecorder) ?usize {
+        if (self.has_shapes or self.has_text) {
+            if (self.layer + 1 == Renderer.max_layers) return null;
+            self.beginLayer(self.renderer.layer_scissors[self.layer]);
+        }
+        self.has_materials = true;
+        return self.layer;
+    }
+
+    fn isUsed(self: *const LayerRecorder) bool {
+        return self.has_materials or self.has_shapes or self.has_text;
+    }
+
     fn beginLayer(self: *LayerRecorder, scissor: ?zui.Rect) void {
-        if (!self.has_shapes and !self.has_text) {
+        if (!self.isUsed()) {
             self.renderer.layer_scissors[self.layer] = scissor;
             return;
         }
@@ -413,6 +466,7 @@ const LayerRecorder = struct {
             return;
         }
         self.layer += 1;
+        self.has_materials = false;
         self.has_shapes = false;
         self.has_text = false;
         self.renderer.layer_scissors[self.layer] = scissor;

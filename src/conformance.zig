@@ -62,6 +62,10 @@ const SwapchainHarness = struct {
         };
     }
 
+    pub fn material(_: *SwapchainHarness, color: zui.Color) zui_sokol.Material {
+        return .solid(color);
+    }
+
     fn from(userdata: ?*anyopaque) *SwapchainHarness {
         return @ptrCast(@alignCast(userdata.?));
     }

@@ -63,6 +63,7 @@ pub const Screen = enum {
     typography,
     light_and_depth,
     transforms,
+    materials,
     classic,
 
     pub const Info = struct {
@@ -92,6 +93,7 @@ pub const Screen = enum {
             .typography => .{ .title = "Typography", .tagline = "Six bitmap fonts, wrapping and spacing", .features = &.{ "wrap modes", "letter spacing", "zoom" }, .hue = 0.15 },
             .light_and_depth => .{ .title = "Light & Depth", .tagline = "Gradients in OKLab, shadows, glow and frost", .features = &.{ "Gradient", "Shadow", "BackdropBlur" }, .hue = 0.75 },
             .transforms => .{ .title = "Transforms", .tagline = "Moved, scaled and turned as painted, hit where drawn", .features = &.{ "Transform", "hit inversion", "origin" }, .hue = 0.5 },
+            .materials => .{ .title = "Materials", .tagline = "The renderer's own shader, or its fallback", .features = &.{ "Material", "phase", "fallback" }, .hue = 0.4 },
             .classic => .{ .title = "Classic", .tagline = "The showcase every zui backend shares", .features = &.{ "shared demo", "compare renderers" }, .hue = 0.7 },
         };
     }
@@ -320,7 +322,7 @@ pub const Shell = struct {
         self.openCardWith(ui, .{ .id = id, .layout = .{ .sizing = sizing }, .scroll = .{} }, title);
     }
 
-    fn openCardWith(self: *const Shell, ui: *Ui, element: zui.Element, title: []const u8) void {
+    fn openCardWith(self: *const Shell, ui: *Ui, element: Ui.Element, title: []const u8) void {
         var card = element;
         card.layout = .{ .direction = .top_to_bottom, .sizing = element.layout.?.sizing, .padding = .all(14), .child_gap = 10 };
         card.decoration = .{ .background = self.palette.surface, .border = .{ .color = self.palette.border, .widths = .all(1) }, .corner_radius = .all(10) };

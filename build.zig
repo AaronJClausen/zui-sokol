@@ -1,4 +1,5 @@
 const std = @import("std");
+const sokol = @import("sokol");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -91,10 +92,22 @@ pub fn build(b: *std.Build) void {
     linkThroughLlvmOnLinux(conformance);
     b.step("conformance", "Run zui's renderer suite against the renderer, in a window, with OpenGL").dependOn(&b.addRunArtifact(conformance).step);
 
+    const regenerate_shaders = sokol.shdc.createSourceFile(b, .{
+        .shdc_dep = sokol_dependency.builder.dependency("shdc", .{}),
+        .input = material_shader ++ ".glsl",
+        .output = material_shader ++ ".glsl.zig",
+        .slang = .{ .glsl410 = true, .hlsl5 = true, .metal_macos = true },
+    }) catch |err| std.debug.panic("sokol-shdc cannot run here: {t}", .{err});
+    b.step("shaders", "Regenerate " ++ material_shader ++ ".glsl.zig from its GLSL with sokol-shdc").dependOn(regenerate_shaders);
+
     const formatted_paths: []const []const u8 = &.{ "build.zig", "build.zig.zon", "src", "examples" };
-    b.step("fmt", "Format all Zig sources").dependOn(&b.addFmt(.{ .paths = formatted_paths }).step);
-    b.step("fmt-check", "Fail if any Zig source is not formatted").dependOn(&b.addFmt(.{ .paths = formatted_paths, .check = true }).step);
+    const generated_paths: []const []const u8 = &.{material_shader ++ ".glsl.zig"};
+    b.step("fmt", "Format all Zig sources").dependOn(&b.addFmt(.{ .paths = formatted_paths, .exclude_paths = generated_paths }).step);
+    b.step("fmt-check", "Fail if any Zig source is not formatted").dependOn(&b.addFmt(.{ .paths = formatted_paths, .exclude_paths = generated_paths, .check = true }).step);
 }
+
+/// Checked in, so that building zui_sokol never runs sokol-shdc.
+const material_shader = "src/material";
 
 /// Zig 0.16's own ELF linker rejects the R_X86_64_PC64 relocations in the
 /// `.sframe` section that GCC 16's crt1.o carries, and LLD crashes the

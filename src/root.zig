@@ -8,6 +8,7 @@ pub const zui_reflect = @import("zui_reflect");
 pub const sokol = @import("sokol");
 
 pub const Renderer = @import("renderer.zig").Renderer;
+pub const Material = @import("materials.zig").Material;
 pub const truetype = @import("truetype.zig");
 pub const InputCollector = @import("input.zig").InputCollector;
 
@@ -18,8 +19,9 @@ pub const Image = struct {
 };
 
 /// A `zui.Config` for `Renderer`: text measured by `Text`, images that are
-/// `Image`s, and exactly the commands `Renderer` draws, gradients, shadows,
-/// backdrop blurs and transforms among them. Override any other field:
+/// `Image`s, materials that are `Material`s, and exactly the commands
+/// `Renderer` draws, gradients, shadows, backdrop blurs, transforms and
+/// materials among them. Override any other field:
 /// `zui.Context(zui_sokol.config(.{ .limits = .{ .max_elements = 8192 } }))`.
 pub fn config(overrides: zui.Config) zui.Config {
     comptime zui.checkRenderer(Renderer);
@@ -28,7 +30,7 @@ pub fn config(overrides: zui.Config) zui.Config {
     result.commands = Renderer.zui_commands;
     result.ImageHandle = Renderer.ImageHandle;
     result.CustomData = void;
-    result.MaterialHandle = void;
+    result.MaterialHandle = Renderer.MaterialHandle;
     return result;
 }
 
@@ -133,16 +135,17 @@ test "measurement is additive, with letter spacing after every glyph" {
 test "config makes images sokol textures and text debugtext's" {
     const derived = config(.{ .limits = .{ .max_elements = 128 }, .CustomData = u32 });
     try std.testing.expect(derived.ImageHandle == Image);
+    try std.testing.expect(derived.MaterialHandle == Material);
     try std.testing.expect(derived.Text == Text);
     try std.testing.expect(derived.CustomData == void);
     try std.testing.expectEqual(@as(u32, 128), derived.limits.max_elements);
 }
 
-test "the renderer draws the base commands, images, gradients, shadows, backdrop blurs and transforms, into sokol_app's swapchain" {
+test "the renderer draws the base commands, images, gradients, shadows, backdrop blurs, transforms and materials, into sokol_app's swapchain" {
     const Ui = zui.Context(config(.{ .limits = .{ .max_elements = 8 } }));
     const Payload = Ui.RenderCommand.Payload;
-    try std.testing.expectEqual(11, @typeInfo(Payload).@"union".fields.len);
-    inline for (.{ "gradient", "shadow", "backdrop_blur", "transform_begin", "transform_end" }) |optional| try std.testing.expect(@hasField(Payload, optional));
+    try std.testing.expectEqual(12, @typeInfo(Payload).@"union".fields.len);
+    inline for (.{ "gradient", "shadow", "backdrop_blur", "transform_begin", "transform_end", "material" }) |optional| try std.testing.expect(@hasField(Payload, optional));
     var text: Text = .{};
     var ui = try Ui.init(std.testing.allocator, std.testing.io, &text);
     defer ui.deinit(std.testing.allocator);
@@ -162,6 +165,7 @@ test {
     _ = @import("input.zig");
     _ = @import("renderer.zig");
     _ = @import("backdrop_blur.zig");
+    _ = @import("materials.zig");
     _ = @import("bitmap_glyphs.zig");
     _ = @import("truetype.zig");
     _ = @import("glyph_atlas.zig");

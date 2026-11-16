@@ -157,7 +157,7 @@ pub const Gallery = struct {
     fn tile(self: *Gallery, ui: *Ui, shell: *const Shell, key: u32, status: TileLoads.Status) void {
         const palette = shell.palette;
         const size = self.tile_size;
-        const frame: zui.Element = .{
+        const frame: Ui.Element = .{
             .layout = .{ .direction = .top_to_bottom, .sizing = .{ .width = .fixed(size), .height = .fixed(size) }, .padding = .all(6), .child_gap = 4, .child_alignment = .{ .x = .center, .y = .center } },
             .decoration = .{ .background = palette.surface, .border = .{ .color = palette.border, .widths = .all(1) }, .corner_radius = .all(8) },
         };

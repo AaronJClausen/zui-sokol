@@ -134,7 +134,7 @@ pub const BoxStorm = struct {
         }
     }
 
-    const SpiralLevel = struct { direction: zui.Direction, block: zui.Element, block_first: bool };
+    const SpiralLevel = struct { direction: zui.Direction, block: Ui.Element, block_first: bool };
 
     fn spiralLevel(level: usize, shell: *const Shell) SpiralLevel {
         const turn = level % 4;
