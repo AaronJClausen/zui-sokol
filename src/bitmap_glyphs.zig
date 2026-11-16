@@ -4,6 +4,7 @@ const sokol = @import("sokol");
 const sg = sokol.gfx;
 const sgl = sokol.gl;
 const sdtx = sokol.debugtext;
+const VertexColor = @import("destination.zig").VertexColor;
 
 /// sokol_debugtext's built-in fonts, in `FontId` order.
 pub fn fonts() [font_count]sdtx.FontDesc {
@@ -36,7 +37,7 @@ pub const BitmapGlyphs = struct {
 
     /// Lays the glyphs out as sokol_debugtext does: in square cells of
     /// `glyph_size`, starting at `bounds.x`, centered down `bounds`.
-    pub fn draw(self: *BitmapGlyphs, content: []const u8, bounds: zui.Rect, font: u16, glyph_size: f32, letter_spacing: f32, color: zui.Color) void {
+    pub fn draw(self: *BitmapGlyphs, content: []const u8, bounds: zui.Rect, font: u16, glyph_size: f32, letter_spacing: f32, color: VertexColor) void {
         if (glyph_size <= 0 or !self.ready()) return;
         const utf8 = std.unicode.Utf8View.init(content) catch return;
         const font_index: u16 = @min(font, font_count - 1);
@@ -46,7 +47,7 @@ pub const BitmapGlyphs = struct {
         const texture_bottom = (font_row + glyph_side) / texture_height;
         sgl.enableTexture();
         sgl.texture(self.texture, self.sampler);
-        sgl.c4b(color.r, color.g, color.b, color.a);
+        color.apply();
         sgl.beginQuads();
         var glyph_index: f32 = 0;
         var codepoints = utf8.iterator();

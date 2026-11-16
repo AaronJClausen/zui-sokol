@@ -21,9 +21,9 @@ pub const Image = struct {
 /// A `zui.Config` for `Renderer`: text measured by `Text`, images that are
 /// `Image`s, materials that are `Material`s, and exactly the commands
 /// `Renderer` draws, gradients, shadows, backdrop blurs, transforms and
-/// materials among them. The renderer draws `zui.ExtendedColor`, encoded
-/// into its 8-bit sRGB target, so an application may declare its colors in
-/// either. Override any other field:
+/// materials among them. The renderer draws `zui.ExtendedColor`, clamped
+/// into an 8-bit sRGB target and as declared into an `.scrgb_fp16` one, so
+/// an application may declare its colors in either. Override any other field:
 /// `zui.Context(zui_sokol.config(.{ .Color = zui.ExtendedColor, .limits = .{ .max_elements = 8192 } }))`.
 pub fn config(overrides: zui.Config) zui.Config {
     comptime zui.checkRenderer(Renderer);
@@ -144,7 +144,7 @@ test "config makes images sokol textures and text debugtext's" {
     try std.testing.expectEqual(@as(u32, 128), derived.limits.max_elements);
 }
 
-test "the renderer draws the base commands, images, gradients, shadows, backdrop blurs, transforms and materials, into sokol_app's swapchain" {
+test "the renderer draws the base commands, images, gradients, shadows, backdrop blurs, transforms and materials, into sokol_app's swapchain or an image of its own" {
     const Ui = zui.Context(config(.{ .limits = .{ .max_elements = 8 } }));
     const Payload = Ui.RenderCommand.Payload;
     try std.testing.expectEqual(12, @typeInfo(Payload).@"union".fields.len);
@@ -156,7 +156,7 @@ test "the renderer draws the base commands, images, gradients, shadows, backdrop
     const frame = ui.endFrame();
     defer ui.release(frame);
     var renderer: Renderer = .{ .text = &text, .pipeline = .{}, .alpha_coverage_pipeline = .{} };
-    try std.testing.expectError(error.UnsupportedSurface, renderer.zuiSubmit(.{ .offscreen = .{ .size = .{ 100, 100 } } }, frame));
+    try std.testing.expectError(error.UnsupportedSurface, renderer.zuiSubmit(.{ .terminal = .{ .columns = 80, .rows = 24 } }, frame));
 }
 
 test "every cursor maps to one of sokol's" {
@@ -169,6 +169,7 @@ test {
     _ = @import("renderer.zig");
     _ = @import("backdrop_blur.zig");
     _ = @import("materials.zig");
+    _ = @import("destination.zig");
     _ = @import("bitmap_glyphs.zig");
     _ = @import("truetype.zig");
     _ = @import("glyph_atlas.zig");

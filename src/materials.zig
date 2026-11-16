@@ -3,6 +3,7 @@ const zui = @import("zui");
 const sokol = @import("sokol");
 const sg = sokol.gfx;
 const shader = @import("material.glsl.zig");
+const Destination = @import("destination.zig").Destination;
 
 /// The renderer's `MaterialHandle`: a pattern between two colors, drawn by
 /// its own shader over the element, in its corners. A renderer without
@@ -62,6 +63,8 @@ pub const Materials = struct {
 
     shader: sg.Shader = .{},
     pipeline: sg.Pipeline = .{},
+    /// What `pipeline` draws into.
+    pipeline_pixels: ?Destination.Pixels = null,
     vertex_buffer: sg.Buffer = .{},
     recorded: ?*Recorded = null,
     draw_count: usize = 0,
@@ -99,22 +102,42 @@ pub const Materials = struct {
         return self.created and !self.unsupported;
     }
 
-    /// Before a frame is recorded.
-    pub fn prepare(self: *Materials, commands: anytype) void {
+    /// Before a frame drawn into `pixels` is recorded.
+    pub fn prepare(self: *Materials, commands: anytype, pixels: Destination.Pixels) void {
         self.draw_count = 0;
         self.vertex_count = 0;
         self.next_to_replay = 0;
-        if (self.created) return;
-        for (commands) |command| if (command.payload == .material) {
+        if (!self.created) for (commands) |command| if (command.payload == .material) {
             self.create();
-            return;
+            break;
         };
+        if (self.created and !self.unsupported and !std.meta.eql(self.pipeline_pixels, pixels)) self.makePipeline(pixels);
     }
 
     fn create(self: *Materials) void {
         self.created = true;
         self.shader = sg.makeShader(shader.materialShaderDesc(sg.queryBackend()));
-        var pipeline_desc: sg.PipelineDesc = .{ .shader = self.shader, .primitive_type = .TRIANGLES, .label = "zui-sokol material" };
+        self.vertex_buffer = sg.makeBuffer(.{
+            .usage = .{ .vertex_buffer = true, .write_transient = true },
+            .size = max_vertices * @sizeOf(Vertex),
+            .label = "zui-sokol material vertices",
+        });
+        self.recorded = std.heap.page_allocator.create(Recorded) catch null;
+        self.unsupported = self.recorded == null or
+            sg.queryShaderState(self.shader) != .VALID or
+            sg.queryBufferState(self.vertex_buffer) != .VALID;
+    }
+
+    fn makePipeline(self: *Materials, pixels: Destination.Pixels) void {
+        if (self.pipeline.id != 0) sg.destroyPipeline(self.pipeline);
+        var pipeline_desc: sg.PipelineDesc = .{
+            .shader = self.shader,
+            .primitive_type = .TRIANGLES,
+            .sample_count = pixels.sample_count,
+            .depth = .{ .pixel_format = pixels.depth_format },
+            .label = "zui-sokol material",
+        };
+        pipeline_desc.colors[0].pixel_format = pixels.color_format;
         pipeline_desc.layout.attrs[shader.ATTR_material_position].format = .FLOAT2;
         pipeline_desc.layout.attrs[shader.ATTR_material_local_position].format = .FLOAT2;
         pipeline_desc.colors[0].write_mask = .RGBA;
@@ -126,22 +149,14 @@ pub const Materials = struct {
             .dst_factor_alpha = .ONE_MINUS_SRC_ALPHA,
         };
         self.pipeline = sg.makePipeline(pipeline_desc);
-        self.vertex_buffer = sg.makeBuffer(.{
-            .usage = .{ .vertex_buffer = true, .write_transient = true },
-            .size = max_vertices * @sizeOf(Vertex),
-            .label = "zui-sokol material vertices",
-        });
-        self.recorded = std.heap.page_allocator.create(Recorded) catch null;
-        self.unsupported = self.recorded == null or
-            sg.queryShaderState(self.shader) != .VALID or
-            sg.queryPipelineState(self.pipeline) != .VALID or
-            sg.queryBufferState(self.vertex_buffer) != .VALID;
+        self.pipeline_pixels = pixels;
+        self.unsupported = sg.queryPipelineState(self.pipeline) != .VALID;
     }
 
     /// Keeps `material` to draw over `outline`, a fan around `center`, before
     /// layer `layer`'s shapes. `to_window` maps the outline's units to the
     /// window's. False, counted in `lowered`, when the frame has no room.
-    pub fn record(self: *Materials, material: Material, outline: []const [2]f32, bounds: zui.Rect, to_window: zui.Affine, viewport: [2]f32, layer: usize) bool {
+    pub fn record(self: *Materials, material: Material, outline: []const [2]f32, bounds: zui.Rect, to_window: zui.Affine, viewport: [2]f32, layer: usize, format: zui.OutputFormat) bool {
         const recorded = self.recorded.?;
         const vertex_count = 3 * outline.len;
         if (self.draw_count == max_per_frame or self.vertex_count + vertex_count > max_vertices) {
@@ -162,8 +177,8 @@ pub const Materials = struct {
             .vertex_count = @intCast(vertex_count),
             .vertex_uniforms = .{ .window_to_clip = windowToClip(to_window, viewport) },
             .fragment_uniforms = .{
-                .first_color = colorComponents(material.first),
-                .second_color = colorComponents(if (material.pattern == .solid) material.first else material.second),
+                .first_color = colorComponents(material.first, format),
+                .second_color = colorComponents(if (material.pattern == .solid) material.first else material.second, format),
                 .size_and_scale = .{ bounds.width, bounds.height, material.scale, 0 },
                 .pattern_and_phase = .{ @floatFromInt(@intFromEnum(material.pattern)), material.phase, 0, 0 },
             },
@@ -212,12 +227,19 @@ fn windowToClip(to_window: zui.Affine, viewport: [2]f32) [16]f32 {
     };
 }
 
-fn colorComponents(color: zui.Color) [4]f32 {
-    return .{
-        @as(f32, @floatFromInt(color.r)) / 255,
-        @as(f32, @floatFromInt(color.g)) / 255,
-        @as(f32, @floatFromInt(color.b)) / 255,
-        @as(f32, @floatFromInt(color.a)) / 255,
+/// In linear light for an `.scrgb_fp16` target.
+fn colorComponents(color: zui.Color, format: zui.OutputFormat) [4]f32 {
+    return switch (format) {
+        .sdr => .{
+            @as(f32, @floatFromInt(color.r)) / 255,
+            @as(f32, @floatFromInt(color.g)) / 255,
+            @as(f32, @floatFromInt(color.b)) / 255,
+            @as(f32, @floatFromInt(color.a)) / 255,
+        },
+        .scrgb_fp16 => linear: {
+            const linear: zui.ExtendedColor = .fromColor(color);
+            break :linear .{ linear.r, linear.g, linear.b, linear.a };
+        },
     };
 }
 

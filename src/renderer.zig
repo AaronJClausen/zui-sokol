@@ -16,6 +16,10 @@ const Material = materials.Material;
 const Materials = materials.Materials;
 const bitmap_glyphs = @import("bitmap_glyphs.zig");
 const BitmapGlyphs = bitmap_glyphs.BitmapGlyphs;
+const destination = @import("destination.zig");
+const Destination = destination.Destination;
+const OffscreenTarget = destination.OffscreenTarget;
+const VertexColor = destination.VertexColor;
 
 /// On Windows the renderer draws into a native host's window with a
 /// context of its own: a Direct3D 11 swapchain composed into the window,
@@ -28,18 +32,21 @@ const native = if (!draws_into_win32) struct {
 
 /// The renderer contract, through sokol_gfx: draws zui frames with
 /// sokol_gl (shapes, images, TrueType text) and sokol_debugtext (bitmap
-/// text) into sokol_app's swapchain, its `.library` surface, or, built with
-/// OpenGL on Windows, into a native host's `.win32` window. Both record into
-/// numbered layers that are replayed in order, so shapes and text
-/// interleave in zui's paint order, and each layer is drawn under its own
-/// scissor rectangle. A frame with a backdrop blur is drawn offscreen and
+/// text) into sokol_app's swapchain, its `.library` surface, into an image
+/// of its own for an `.offscreen` surface, which may be `.scrgb_fp16`, or,
+/// built with OpenGL on Windows, into a native host's `.win32` window.
+/// Both record into numbered layers that are replayed in order, so shapes
+/// and text interleave in zui's paint order, and each layer is drawn under
+/// its own scissor rectangle. A frame with a backdrop blur is drawn offscreen and
 /// copied to the surface, so that the blur can sample what is beneath it.
 /// A transform is sokol_gl's modelview matrix; a clip inside one is
 /// scissored to the box around it in the window, which is larger than a
 /// turned clip. A material is drawn by its own shader at the start of a
-/// layer, before the layer's shapes.
+/// layer, before the layer's shapes. In an `.scrgb_fp16` target every
+/// color is drawn in linear light, and bitmap text by sokol_gl, since
+/// sokol_debugtext would write its colors' sRGB encoding.
 pub const Renderer = struct {
-    pub const zui_surfaces: zui.SurfaceKinds = if (draws_into_win32) .initMany(&.{ .library, .win32 }) else .initOne(.library);
+    pub const zui_surfaces: zui.SurfaceKinds = if (draws_into_win32) .initMany(&.{ .library, .offscreen, .win32 }) else .initMany(&.{ .library, .offscreen });
     pub const zui_commands: zui.CommandSet = .initMany(&.{ .gradient, .shadow, .backdrop_blur, .transform, .material });
     pub const zui_extended_color = true;
     pub const ImageHandle = Image;
@@ -79,6 +86,9 @@ pub const Renderer = struct {
     /// ones were drawn as their parent is.
     transform_overflows: u32 = 0,
     materials: Materials = .{},
+    offscreen: OffscreenTarget = .{},
+    /// The format of the frame being recorded.
+    format: zui.OutputFormat = .sdr,
 
     /// Call after `sokol.gfx.setup`.
     pub fn init(text: *const Text) Renderer {
@@ -90,22 +100,10 @@ pub const Renderer = struct {
         debugtext_desc.fonts[0..bitmap_glyphs.font_count].* = bitmap_glyphs.fonts();
         sdtx.setup(debugtext_desc);
 
-        var colors: [8]sg.ColorTargetState = @splat(.{});
-        // sokol_gl writes no alpha by default, so a window composed with its
-        // alpha (a native host's, over a system backdrop) would show the
-        // backdrop through every shape.
-        colors[0].write_mask = .RGBA;
-        colors[0].blend = .{
-            .enabled = true,
-            .src_factor_rgb = .SRC_ALPHA,
-            .dst_factor_rgb = .ONE_MINUS_SRC_ALPHA,
-            .src_factor_alpha = .ONE,
-            .dst_factor_alpha = .ONE_MINUS_SRC_ALPHA,
-        };
         var coverage: [8]sg.ColorTargetState = @splat(.{});
         coverage[0].write_mask = .A;
         coverage[0].blend = .{ .enabled = true, .src_factor_alpha = .ONE, .dst_factor_alpha = .ONE, .op_alpha = .MAX };
-        return .{ .text = text, .pipeline = sgl.makePipeline(.{ .colors = colors }), .alpha_coverage_pipeline = sgl.makePipeline(.{ .colors = coverage }) };
+        return .{ .text = text, .pipeline = sgl.makePipeline(destination.blendingPipeline()), .alpha_coverage_pipeline = sgl.makePipeline(.{ .colors = coverage }) };
     }
 
     /// For a native host's window: makes its graphics context, sets
@@ -126,6 +124,7 @@ pub const Renderer = struct {
     pub fn deinit(self: *Renderer) void {
         self.backdrop_blurs.deinit();
         self.materials.deinit();
+        self.offscreen.deinit();
         self.bitmap_glyphs.deinit();
         self.destroyGlyphTexture();
         if (self.glyph_texture.sampler.id != 0) sg.destroySampler(self.glyph_texture.sampler);
@@ -140,8 +139,8 @@ pub const Renderer = struct {
         };
     }
 
-    /// Draws `frame` in one swapchain pass, cleared to `clear_color`, and
-    /// commits it.
+    /// Draws `frame` into `surface`, cleared to `clear_color`, and commits
+    /// it. An `.offscreen` surface is drawn into `offscreenImage()`.
     ///
     /// ```zig
     /// const frame = ui.endFrame();
@@ -149,48 +148,64 @@ pub const Renderer = struct {
     /// ui.release(frame);
     /// ```
     pub fn zuiSubmit(self: *Renderer, surface: zui.Surface, frame: anytype) error{UnsupportedSurface}!void {
-        const swapchain = switch (surface) {
-            .library => sokol.glue.swapchain(),
-            .win32 => if (comptime !draws_into_win32) return error.UnsupportedSurface else if (self.native) |*context| context.swapchain() else return error.UnsupportedSurface,
+        const Target = union(enum) { swapchain: sg.Swapchain, offscreen };
+        const target: Target = switch (surface) {
+            .library => .{ .swapchain = sokol.glue.swapchain() },
+            .win32 => if (comptime !draws_into_win32) return error.UnsupportedSurface else if (self.native) |*context| .{ .swapchain = context.swapchain() } else return error.UnsupportedSurface,
+            .offscreen => |offscreen| if (self.offscreen.prepare(offscreen.size, offscreen.format)) .offscreen else return error.UnsupportedSurface,
             else => return error.UnsupportedSurface,
         };
-        const clear_value: sg.Color = .{
-            .r = @as(f32, @floatFromInt(self.clear_color.r)) / 255,
-            .g = @as(f32, @floatFromInt(self.clear_color.g)) / 255,
-            .b = @as(f32, @floatFromInt(self.clear_color.b)) / 255,
-            .a = @as(f32, @floatFromInt(self.clear_color.a)) / 255,
+        const into: Destination, const size: [2]i32, const pipeline = switch (target) {
+            .swapchain => |swapchain| .{ .swapchain(), .{ swapchain.width, swapchain.height }, self.pipeline },
+            .offscreen => .{ self.offscreen.destination(), self.offscreen.size, self.offscreen.pipeline },
         };
+        self.format = into.format;
+        const clear_value = clearValue(self.clear_color, into.format);
         var action: sg.PassAction = .{};
         action.colors[0] = .{ .load_action = .CLEAR, .clear_value = clear_value };
-        self.backdrop_blurs.prepare(frame.commands(), .{ swapchain.width, swapchain.height });
-        self.materials.prepare(frame.commands());
-        const layer_count = self.record(frame.commands(), frame.params);
+        const final_pass: sg.Pass = switch (target) {
+            .swapchain => |swapchain| .{ .action = action, .swapchain = swapchain },
+            .offscreen => self.offscreen.pass(action),
+        };
+        self.backdrop_blurs.prepare(frame.commands(), size, into);
+        self.materials.prepare(frame.commands(), into.pixels);
+        const layer_count = self.record(frame.commands(), frame.params, into, pipeline);
         self.materials.upload();
         if (self.backdrop_blurs.count == 0) {
-            sg.beginPass(.{ .action = action, .swapchain = swapchain });
-            self.replay(layer_count, frame.params, clear_value);
+            sg.beginPass(final_pass);
+            self.replay(layer_count, frame.params, clear_value, into);
             sg.endPass();
         } else {
             sg.beginPass(self.backdrop_blurs.scenePass(.CLEAR, clear_value));
-            self.replay(layer_count, frame.params, clear_value);
+            self.replay(layer_count, frame.params, clear_value, into);
             sg.endPass();
-            sg.beginPass(.{ .action = action, .swapchain = swapchain });
+            sg.beginPass(final_pass);
             applyScissor(null, frame.params);
-            sgl.drawLayer(present_layer);
+            sgl.contextDrawLayer(into.context, present_layer);
             sg.endPass();
         }
         sg.commit();
         if (comptime draws_into_win32) if (surface == .win32) self.native.?.present();
     }
 
+    /// What the last `.offscreen` surface was drawn into, in its format:
+    /// `.RGBA8` holding sRGB's encoding for `.sdr`, `.RGBA16F` holding
+    /// linear scRGB for `.scrgb_fp16`. Stored bottom row first on OpenGL.
+    pub fn offscreenImage(self: *const Renderer) sg.Image {
+        return self.offscreen.image;
+    }
+
     /// Records `commands` into numbered layers, returning how many.
     /// `params` are the frame record's: its viewport and the physical
     /// pixels per layout unit (`scale × zoom`).
-    fn record(self: *Renderer, commands: anytype, params: zui.FrameParams) usize {
+    fn record(self: *Renderer, commands: anytype, params: zui.FrameParams, into: Destination, pipeline: sgl.Pipeline) usize {
         const viewport = params.viewport;
+        const format = into.format;
 
+        sgl.setContext(into.context);
+        defer sgl.setContext(sgl.defaultContext());
         sgl.defaults();
-        sgl.loadPipeline(self.pipeline);
+        sgl.loadPipeline(pipeline);
         sgl.matrixModeProjection();
         sgl.ortho(0, viewport[0], viewport[1], 0, -1, 1);
         const pixels_per_unit = params.scale * params.zoom;
@@ -205,39 +220,39 @@ pub const Renderer = struct {
             switch (command.payload) {
                 .rectangle => |rectangle| {
                     recorder.beginShapes();
-                    const color = sdrColor(rectangle.color);
+                    const color: VertexColor = .of(rectangle.color, format);
                     fillRectangle(bounds, rectangle.corner_radius, color, self.corner_segments);
                     if (self.composes_alpha) self.coverAlpha(recorder.layer, fillRectangle, .{ bounds, rectangle.corner_radius, color, self.corner_segments });
                 },
                 .border => |border| {
                     recorder.beginShapes();
-                    const color = sdrColor(border.color);
+                    const color: VertexColor = .of(border.color, format);
                     strokeBorder(bounds, border.widths, border.corner_radius, color, self.corner_segments);
                     if (self.composes_alpha) self.coverAlpha(recorder.layer, strokeBorder, .{ bounds, border.widths, border.corner_radius, color, self.corner_segments });
                 },
                 .text => |line| if (self.text.trueTypeFont(line.style.font)) |font| {
                     recorder.beginShapes();
-                    if (self.glyphs) |atlas| drawTrueTypeText(atlas, self.glyph_texture, font, line.content, bounds, line.style, pixels_per_unit);
-                } else if (transforms.isActive()) {
+                    if (self.glyphs) |atlas| drawTrueTypeText(atlas, self.glyph_texture, font, line.content, bounds, line.style, .of(line.style.color, format), pixels_per_unit);
+                } else if (transforms.isActive() or !into.is_swapchain) {
                     recorder.beginShapes();
-                    self.bitmap_glyphs.draw(line.content, bounds, line.style.font, self.text.glyphSize(line.style.size), line.style.letter_spacing, sdrColor(line.style.color));
+                    self.bitmap_glyphs.draw(line.content, bounds, line.style.font, self.text.glyphSize(line.style.size), line.style.letter_spacing, .of(line.style.color, format));
                 } else {
                     recorder.beginText();
                     drawText(self.text, line.content, bounds, line.style, viewport);
                 },
                 .image => |image| {
                     recorder.beginShapes();
-                    drawImage(image.handle, bounds, sdrColor(image.tint), image.corner_radius, self.corner_segments);
+                    drawImage(image.handle, bounds, .of(image.tint, format), image.corner_radius, self.corner_segments);
                 },
                 .gradient => |gradient| {
                     recorder.beginShapes();
-                    fillGradient(bounds, gradient, self.corner_segments);
-                    if (self.composes_alpha) self.coverAlpha(recorder.layer, fillGradient, .{ bounds, gradient, self.corner_segments });
+                    fillGradient(bounds, gradient, format, self.corner_segments);
+                    if (self.composes_alpha) self.coverAlpha(recorder.layer, fillGradient, .{ bounds, gradient, format, self.corner_segments });
                 },
                 .shadow => |shadow| {
                     recorder.beginShapes();
-                    drawShadow(bounds, shadow, self.corner_segments);
-                    if (self.composes_alpha) self.coverAlpha(recorder.layer, drawShadow, .{ bounds, shadow, self.corner_segments });
+                    drawShadow(bounds, shadow, format, self.corner_segments);
+                    if (self.composes_alpha) self.coverAlpha(recorder.layer, drawShadow, .{ bounds, shadow, format, self.corner_segments });
                 },
                 .backdrop_blur => |blur| {
                     if (self.backdrop_blurs.ready) if (recorder.beginBackdropBlur()) |layer| {
@@ -249,13 +264,13 @@ pub const Renderer = struct {
                         }
                     };
                     recorder.beginShapes();
-                    const tint = sdrColor(blur.tint);
+                    const tint: VertexColor = .of(blur.tint, format);
                     fillRectangle(bounds, blur.corner_radius, tint, self.corner_segments);
                     if (self.composes_alpha) self.coverAlpha(recorder.layer, fillRectangle, .{ bounds, blur.corner_radius, tint, self.corner_segments });
                 },
                 .material => |material| if (!self.recordMaterial(&recorder, material, bounds, transforms.current(), viewport)) {
                     recorder.beginShapes();
-                    const fallback = sdrColor(material.fallback);
+                    const fallback: VertexColor = .of(material.fallback, format);
                     fillRectangle(bounds, material.corner_radius, fallback, self.corner_segments);
                     if (self.composes_alpha) self.coverAlpha(recorder.layer, fillRectangle, .{ bounds, material.corner_radius, fallback, self.corner_segments });
                 },
@@ -295,9 +310,9 @@ pub const Renderer = struct {
         };
         var outline: Outline = .{};
         outline.trace(bounds, material.corner_radius, .{}, self.corner_segments);
-        if (!self.materials.record(material.handle, outline.points[0..outline.count], bounds, to_window, viewport, layer)) return false;
+        if (!self.materials.record(material.handle, outline.points[0..outline.count], bounds, to_window, viewport, layer, self.format)) return false;
         if (self.composes_alpha) {
-            const coverage: zui.Color = .{ .r = 0, .g = 0, .b = 0, .a = material.handle.opacity() };
+            const coverage: VertexColor = .{ .rgba = .{ .r = 0, .g = 0, .b = 0, .a = material.handle.opacity() } };
             self.coverAlpha(layer, fillRectangle, .{ bounds, material.corner_radius, coverage, self.corner_segments });
         }
         return true;
@@ -306,7 +321,7 @@ pub const Renderer = struct {
     /// Draws the recorded layers in the current pass, which is the scene's
     /// when the frame has backdrop blurs: it ends before each blur's
     /// passes, and the scene's resumes after them.
-    fn replay(self: *Renderer, layer_count: usize, params: zui.FrameParams, clear_value: sg.Color) void {
+    fn replay(self: *Renderer, layer_count: usize, params: zui.FrameParams, clear_value: sg.Color, into: Destination) void {
         const scissors = self.layer_scissors[0..layer_count];
         var next_blur: usize = 0;
         for (scissors, 0..) |scissor, layer| {
@@ -317,8 +332,8 @@ pub const Renderer = struct {
             }
             applyScissor(scissor, params);
             self.materials.replayBefore(layer);
-            sgl.drawLayer(@intCast(layer));
-            sdtx.drawLayer(@intCast(layer));
+            sgl.contextDrawLayer(into.context, @intCast(layer));
+            if (into.is_swapchain) sdtx.drawLayer(@intCast(layer));
         }
         if (self.composes_alpha) for (scissors, 0..) |scissor, layer| {
             applyScissor(scissor, params);
@@ -562,22 +577,28 @@ fn wholeViewport(viewport: [2]f32) zui.Rect {
     return .{ .x = 0, .y = 0, .width = viewport[0], .height = viewport[1] };
 }
 
-fn setColor(color: zui.Color) void {
-    sgl.c4b(color.r, color.g, color.b, color.a);
-}
-
-/// The commands carry `zui.ExtendedColor` when the application declares
-/// its colors in it, and `zui.Color` otherwise.
-fn sdrColor(color: anytype) zui.Color {
-    return if (@TypeOf(color) == zui.ExtendedColor) color.toColor() else color;
+/// An `.scrgb_fp16` target is cleared in linear light.
+fn clearValue(color: zui.Color, format: zui.OutputFormat) sg.Color {
+    return switch (format) {
+        .sdr => .{
+            .r = @as(f32, @floatFromInt(color.r)) / 255,
+            .g = @as(f32, @floatFromInt(color.g)) / 255,
+            .b = @as(f32, @floatFromInt(color.b)) / 255,
+            .a = @as(f32, @floatFromInt(color.a)) / 255,
+        },
+        .scrgb_fp16 => linear: {
+            const linear: zui.ExtendedColor = .fromColor(color);
+            break :linear .{ .r = linear.r, .g = linear.g, .b = linear.b, .a = linear.a };
+        },
+    };
 }
 
 fn hasRoundedCorners(radius: zui.CornerRadius) bool {
     return radius.top_left > 0 or radius.top_right > 0 or radius.bottom_left > 0 or radius.bottom_right > 0;
 }
 
-fn fillRectangle(bounds: zui.Rect, radius: zui.CornerRadius, color: zui.Color, corner_segments: u8) void {
-    setColor(color);
+fn fillRectangle(bounds: zui.Rect, radius: zui.CornerRadius, color: VertexColor, corner_segments: u8) void {
+    color.apply();
     if (!hasRoundedCorners(radius)) {
         sgl.beginQuads();
         sgl.v2f(bounds.x, bounds.y);
@@ -618,7 +639,7 @@ const max_gradient_bands = 64;
 
 /// A rounded rectangle is convex, so each band of it is a convex polygon:
 /// the outline cut by the two lines that bound the band.
-fn fillGradient(bounds: zui.Rect, gradient: anytype, corner_segments: u8) void {
+fn fillGradient(bounds: zui.Rect, gradient: anytype, format: zui.OutputFormat, corner_segments: u8) void {
     var outline: Outline = .{};
     outline.trace(bounds, gradient.corner_radius, .{}, corner_segments);
     const direction: [2]f32 = .{ @cos(gradient.angle), @sin(gradient.angle) };
@@ -639,8 +660,8 @@ fn fillGradient(bounds: zui.Rect, gradient: anytype, corner_segments: u8) void {
         const first = band_polygon.points[0];
         for (1..band_polygon.count - 1) |index| {
             for ([3][2]f32{ first, band_polygon.points[index], band_polygon.points[index + 1] }) |point| {
-                const color = sdrColor(gradient.colorAt(bounds, point));
-                sgl.v2fC4b(point[0], point[1], color.r, color.g, color.b, color.a);
+                VertexColor.of(gradient.colorAt(bounds, point), format).apply();
+                sgl.v2f(point[0], point[1]);
             }
         }
     }
@@ -680,28 +701,28 @@ const shadow_fade_rings = 6;
 
 /// The box at the shadow's offset, grown by its spread, in its color; then
 /// rings out to the blur, each fainter, easing out as a blurred edge does.
-fn drawShadow(bounds: zui.Rect, shadow: anytype, corner_segments: u8) void {
+fn drawShadow(bounds: zui.Rect, shadow: anytype, format: zui.OutputFormat, corner_segments: u8) void {
     const caster: zui.Rect = .{ .x = bounds.x + shadow.offset[0], .y = bounds.y + shadow.offset[1], .width = bounds.width, .height = bounds.height };
     const spread = @max(shadow.spread, -@min(caster.width, caster.height) / 2);
     var inner: Outline = .{};
     inner.trace(caster, shadow.corner_radius, .all(-spread), corner_segments);
-    const shadow_color = sdrColor(shadow.color);
-    setColor(shadow_color);
+    const shadow_color: VertexColor = .of(shadow.color, format);
+    shadow_color.apply();
     fillOutline(&inner, centerOf(caster));
     if (shadow.blur <= 0) return;
 
-    var inner_alpha = shadow_color.a;
+    var inner_alpha = shadow_color.rgba.a;
     sgl.beginTriangles();
     for (1..shadow_fade_rings + 1) |ring| {
         const reached = @as(f32, @floatFromInt(ring)) / shadow_fade_rings;
         var outer: Outline = .{};
         outer.trace(caster, shadow.corner_radius, .all(-(spread + shadow.blur * reached)), corner_segments);
-        const outer_alpha: u8 = @intFromFloat(@round(@as(f32, @floatFromInt(shadow_color.a)) * (1 - smoothstep(reached))));
-        const inner_color: zui.Color = .{ .r = shadow_color.r, .g = shadow_color.g, .b = shadow_color.b, .a = inner_alpha };
-        const outer_color: zui.Color = .{ .r = shadow_color.r, .g = shadow_color.g, .b = shadow_color.b, .a = outer_alpha };
+        const outer_alpha: u8 = @intFromFloat(@round(@as(f32, @floatFromInt(shadow_color.rgba.a)) * (1 - smoothstep(reached))));
+        const inner_color = shadow_color.withAlpha(inner_alpha);
+        const outer_color = shadow_color.withAlpha(outer_alpha);
         for (0..outer.count) |index| {
             const next = (index + 1) % outer.count;
-            for ([6]struct { [2]f32, zui.Color }{
+            for ([6]struct { [2]f32, VertexColor }{
                 .{ inner.points[index], inner_color },
                 .{ outer.points[index], outer_color },
                 .{ outer.points[next], outer_color },
@@ -710,7 +731,8 @@ fn drawShadow(bounds: zui.Rect, shadow: anytype, corner_segments: u8) void {
                 .{ inner.points[next], inner_color },
             }) |vertex| {
                 const point, const color = vertex;
-                sgl.v2fC4b(point[0], point[1], color.r, color.g, color.b, color.a);
+                color.apply();
+                sgl.v2f(point[0], point[1]);
             }
         }
         inner = outer;
@@ -725,12 +747,12 @@ fn smoothstep(amount: f32) f32 {
 
 /// Borders are drawn inside the bounds, as CSS draws them: a ring between
 /// the outer outline and one inset by each edge's width.
-fn strokeBorder(bounds: zui.Rect, widths: zui.Edges, radius: zui.CornerRadius, color: zui.Color, corner_segments: u8) void {
+fn strokeBorder(bounds: zui.Rect, widths: zui.Edges, radius: zui.CornerRadius, color: VertexColor, corner_segments: u8) void {
     var outer: Outline = .{};
     var inner: Outline = .{};
     outer.trace(bounds, radius, .{}, corner_segments);
     inner.trace(bounds, radius, widths, corner_segments);
-    setColor(color);
+    color.apply();
     sgl.beginTriangles();
     for (0..outer.count) |index| {
         const next = (index + 1) % outer.count;
@@ -798,7 +820,7 @@ fn drawText(text: *const Text, content: []const u8, bounds: zui.Rect, style: any
     const canvas_scale = 8 / glyph_size;
     sdtx.canvas(viewport[0] * canvas_scale, viewport[1] * canvas_scale);
     sdtx.font(@min(style.font, 5));
-    const color = sdrColor(style.color);
+    const color = VertexColor.of(style.color, .sdr).rgba;
     sdtx.color4b(color.r, color.g, color.b, color.a);
     const row = (bounds.y + (bounds.height - glyph_size) / 2) / glyph_size;
     const glyph_pitch = (glyph_size + style.letter_spacing) / glyph_size;
@@ -824,7 +846,7 @@ fn snapToPixel(value: f32, pixels_per_unit: f32) f32 {
 
 /// The pen advances exactly as `Font.measure` measured, so the text fills
 /// the bounds zui laid out; each glyph's quad starts on a whole pixel.
-fn drawTrueTypeText(atlas: *const GlyphAtlas, texture: Image, font: *const truetype.Font, content: []const u8, bounds: zui.Rect, style: anytype, pixels_per_unit: f32) void {
+fn drawTrueTypeText(atlas: *const GlyphAtlas, texture: Image, font: *const truetype.Font, content: []const u8, bounds: zui.Rect, style: anytype, color: VertexColor, pixels_per_unit: f32) void {
     const pixel_size = rasterPixelSize(style.size, pixels_per_unit);
     const units_per_raster_pixel = style.size / @as(f32, @floatFromInt(pixel_size));
     const scale = font.scaleFor(style.size);
@@ -834,7 +856,7 @@ fn drawTrueTypeText(atlas: *const GlyphAtlas, texture: Image, font: *const truet
 
     sgl.enableTexture();
     sgl.texture(texture.view, texture.sampler);
-    setColor(sdrColor(style.color));
+    color.apply();
     sgl.beginQuads();
     var pen = bounds.x;
     var codepoints = truetype.Codepoints.init(content);
@@ -861,10 +883,10 @@ fn drawTrueTypeText(atlas: *const GlyphAtlas, texture: Image, font: *const truet
 
 /// sokol_gl multiplies each texel by the vertex color, which is the tint.
 /// A rounded image is a fan of textured triangles from its center.
-fn drawImage(image: Image, bounds: zui.Rect, tint: zui.Color, radius: zui.CornerRadius, corner_segments: u8) void {
+fn drawImage(image: Image, bounds: zui.Rect, tint: VertexColor, radius: zui.CornerRadius, corner_segments: u8) void {
     sgl.enableTexture();
     sgl.texture(image.view, image.sampler);
-    setColor(tint);
+    tint.apply();
     if (!hasRoundedCorners(radius) or bounds.width <= 0 or bounds.height <= 0) {
         sgl.beginQuads();
         sgl.v2fT2f(bounds.x, bounds.y, 0, 0);
@@ -897,10 +919,11 @@ test "a band of a square is the strip between its two cuts" {
     for (band.points[0..band.count]) |point| try std.testing.expect(point[0] == 4 or point[0] == 6);
 }
 
-test "an extended color is clamped into the SDR target, and a color is drawn as declared" {
-    try std.testing.expectEqual(zui.Color.white, sdrColor(zui.ExtendedColor.linear(4, 4, 4, 1)));
-    try std.testing.expectEqual(zui.Color.rgb(0x3366ff), sdrColor(zui.ExtendedColor.rgb(0x3366ff)));
-    try std.testing.expectEqual(zui.Color.rgb(0x3366ff), sdrColor(zui.Color.rgb(0x3366ff)));
+test "an scRGB target is cleared in linear light" {
+    try std.testing.expectEqual(sg.Color{ .r = 1, .g = 1, .b = 1, .a = 1 }, clearValue(.white, .scrgb_fp16));
+    const gray = clearValue(.rgb(0x808080), .scrgb_fp16);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.216), gray.r, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 128.0 / 255.0), clearValue(.rgb(0x808080), .sdr).r, 1e-6);
 }
 
 test "a shadow's fade starts at its color and ends clear" {

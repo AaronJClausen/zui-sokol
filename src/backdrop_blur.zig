@@ -3,12 +3,13 @@ const zui = @import("zui");
 const sokol = @import("sokol");
 const sg = sokol.gfx;
 const sgl = sokol.gl;
+const Destination = @import("destination.zig").Destination;
 
 /// A frame with a backdrop blur is drawn into `scene`, a target like the
-/// swapchain, which stops at each blur: two passes blur the scene under the
+/// frame's destination, which stops at each blur: two passes blur the scene under the
 /// element into float targets, along x then along y, the scene resumes with
 /// the blurred pixels drawn inside the element's outline, and the finished
-/// scene is copied to the swapchain. Frames without one never touch it.
+/// scene is copied to the destination. Frames without one never touch it.
 pub const BackdropBlurs = struct {
     pub const max_per_frame = 16;
     const max_vertices = 1 << 17;
@@ -20,7 +21,7 @@ pub const BackdropBlurs = struct {
     created: bool = false,
     /// The GPU cannot render, blend and filter `float_format`.
     unsupported: bool = false,
-    /// What this frame can blur in: set up, sized to the swapchain.
+    /// What this frame can blur in: set up, sized to the destination.
     ready: bool = false,
     /// Times a blur was drawn as its tint alone, because the GPU cannot
     /// blur or the frame had no room left for it.
@@ -32,8 +33,10 @@ pub const BackdropBlurs = struct {
     /// 1/65025, scaled down by the fine pipeline's blend color.
     coarse_pipeline: sgl.Pipeline = .{},
     fine_pipeline: sgl.Pipeline = .{},
-    /// In sokol_gl's default context: writes what it samples, alpha too.
+    /// In the context recording the frame, `scene_destination`'s: writes
+    /// what it samples, alpha too.
     replace_pipeline: sgl.Pipeline = .{},
+    scene_destination: ?Destination = null,
     sampler: sg.Sampler = .{},
     flips_render_target_rows: bool = false,
 
@@ -66,28 +69,36 @@ pub const BackdropBlurs = struct {
         if (!self.created) return;
         self.destroyTargets();
         sg.destroySampler(self.sampler);
-        sgl.destroyPipeline(self.replace_pipeline);
+        if (self.replace_pipeline.id != 0) sgl.destroyPipeline(self.replace_pipeline);
         sgl.destroyPipeline(self.coarse_pipeline);
         sgl.destroyPipeline(self.fine_pipeline);
         sgl.destroyContext(self.context);
         self.* = .{};
     }
 
-    /// Before a frame is recorded: readies the targets if the frame has a
-    /// backdrop blur.
-    pub fn prepare(self: *BackdropBlurs, commands: anytype, swapchain_size: [2]i32) void {
+    /// Before a frame drawn into `into`, of `size` pixels, is recorded:
+    /// readies the targets if the frame has a backdrop blur.
+    pub fn prepare(self: *BackdropBlurs, commands: anytype, size: [2]i32, into: Destination) void {
         self.count = 0;
         self.ready = false;
         const has_blur = for (commands) |command| {
             if (command.payload == .backdrop_blur) break true;
         } else false;
-        if (!has_blur or swapchain_size[0] <= 0 or swapchain_size[1] <= 0) return;
+        if (!has_blur or size[0] <= 0 or size[1] <= 0) return;
         if (!self.created) self.create();
         if (self.unsupported) return;
-        if (!std.meta.eql(self.size, swapchain_size)) {
-            self.destroyTargets();
-            self.createTargets(swapchain_size);
+        const same_destination = if (self.scene_destination) |scene| scene.context.id == into.context.id and std.meta.eql(scene.pixels, into.pixels) else false;
+        if (!same_destination) {
+            if (self.replace_pipeline.id != 0) sgl.destroyPipeline(self.replace_pipeline);
+            var replace: sg.PipelineDesc = .{};
+            replace.colors[0].write_mask = .RGBA;
+            self.replace_pipeline = sgl.contextMakePipeline(into.context, replace);
         }
+        if (!same_destination or !std.meta.eql(self.size, size)) {
+            self.destroyTargets();
+            self.createTargets(size, into.pixels);
+        }
+        self.scene_destination = into;
         self.ready = true;
     }
 
@@ -105,8 +116,9 @@ pub const BackdropBlurs = struct {
         const taps: Taps = .gaussian(radius * pixels_per_unit[0]);
         const vertices_per_tap = 2 * 3 * 6;
         const passes = 2;
+        const recording_context = sgl.getContext();
         sgl.setContext(self.context);
-        defer sgl.setContext(sgl.defaultContext());
+        defer sgl.setContext(recording_context);
         const fits = sgl.numVertices() + @as(i32, @intCast(taps.count * vertices_per_tap * passes)) <= max_vertices and
             sgl.numCommands() + @as(i32, @intCast(taps.count * 2 * passes)) <= max_commands;
         if (!fits) {
@@ -173,7 +185,7 @@ pub const BackdropBlurs = struct {
         sgl.end();
     }
 
-    /// In sokol_gl's default context, into the current layer: the last
+    /// In the context recording the frame, into the current layer: the last
     /// recorded blur, filling `outline` as a fan from `center`, both in
     /// units that `to_window` maps to the window's.
     pub fn drawBlurred(self: *const BackdropBlurs, outline: []const [2]f32, center: [2]f32, to_window: zui.Affine, viewport: [2]f32) void {
@@ -196,8 +208,8 @@ pub const BackdropBlurs = struct {
         sgl.popPipeline();
     }
 
-    /// In sokol_gl's default context, into `layer`: the whole scene, to be
-    /// copied to the swapchain.
+    /// In the context recording the frame, into `layer`: the whole scene, to
+    /// be copied to the destination.
     pub fn recordPresent(self: *const BackdropBlurs, viewport: [2]f32, layer: i32) void {
         sgl.layer(layer);
         sgl.pushPipeline();
@@ -261,9 +273,6 @@ pub const BackdropBlurs = struct {
         const step = 1.0 / 255.0;
         self.coarse_pipeline = sgl.contextMakePipeline(self.context, accumulating(.ONE, .{}));
         self.fine_pipeline = sgl.contextMakePipeline(self.context, accumulating(.BLEND_COLOR, .{ .r = step, .g = step, .b = step, .a = step }));
-        var replace: sg.PipelineDesc = .{};
-        replace.colors[0].write_mask = .RGBA;
-        self.replace_pipeline = sgl.contextMakePipeline(sgl.defaultContext(), replace);
         self.sampler = sg.makeSampler(.{ .min_filter = .LINEAR, .mag_filter = .LINEAR, .wrap_u = .CLAMP_TO_EDGE, .wrap_v = .CLAMP_TO_EDGE });
     }
 
@@ -280,18 +289,17 @@ pub const BackdropBlurs = struct {
         return desc;
     }
 
-    fn createTargets(self: *BackdropBlurs, size: [2]i32) void {
+    fn createTargets(self: *BackdropBlurs, size: [2]i32, pixels: Destination.Pixels) void {
         self.size = size;
-        const environment = sg.queryDesc().environment.defaults;
-        const multisampled = environment.sample_count > 1;
-        self.scene.color = sg.makeImage(.{ .usage = .{ .color_attachment = true }, .width = size[0], .height = size[1] });
+        const multisampled = pixels.sample_count > 1;
+        self.scene.color = sg.makeImage(.{ .usage = .{ .color_attachment = true }, .width = size[0], .height = size[1], .pixel_format = pixels.color_format, .sample_count = pixels.sample_count });
         self.scene.color_attachment = sg.makeView(.{ .color_attachment = .{ .image = self.scene.color } });
         if (multisampled) {
-            self.scene.resolve = sg.makeImage(.{ .usage = .{ .resolve_attachment = true }, .width = size[0], .height = size[1], .sample_count = 1 });
+            self.scene.resolve = sg.makeImage(.{ .usage = .{ .resolve_attachment = true }, .width = size[0], .height = size[1], .pixel_format = pixels.color_format, .sample_count = 1 });
             self.scene.resolve_attachment = sg.makeView(.{ .resolve_attachment = .{ .image = self.scene.resolve } });
         }
-        if (environment.depth_format != .NONE) {
-            self.scene.depth = sg.makeImage(.{ .usage = .{ .depth_stencil_attachment = true }, .width = size[0], .height = size[1], .pixel_format = environment.depth_format });
+        if (pixels.depth_format != .NONE) {
+            self.scene.depth = sg.makeImage(.{ .usage = .{ .depth_stencil_attachment = true }, .width = size[0], .height = size[1], .pixel_format = pixels.depth_format, .sample_count = pixels.sample_count });
             self.scene.depth_attachment = sg.makeView(.{ .depth_stencil_attachment = .{ .image = self.scene.depth } });
         }
         self.scene.texture = sg.makeView(.{ .texture = .{ .image = if (multisampled) self.scene.resolve else self.scene.color } });
