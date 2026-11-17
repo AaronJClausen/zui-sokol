@@ -393,7 +393,7 @@ fn produceChatter(io: std.Io, producer: *DemandedProducer, sources: *kit.Sources
             continue;
         }
         sequence += 1;
-        const entry = chatter_lines[random.uintLessThan(usize, chatter_lines.len)];
+        const entry = chatter_lines[random.uintLessThan(u32, chatter_lines.len)];
         const line: LogLine = .init(entry[0], "{d:0>5} {s}", .{ sequence, entry[1] });
         waker.wakeIf(sources.mission_log.publish(line) catch .already_pending);
         const mean_gap_milliseconds = 1000 / @as(f32, @floatFromInt(rate));

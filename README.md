@@ -75,7 +75,9 @@ module.addImport("zui_sokol_tour", zui_sokol.module("zui_sokol_tour"));
 
 `zig build check` compiles and links `examples/tour_freestanding.zig`,
 the tour declaring a frame for `wasm32-freestanding`, so the tour keeps
-building there.
+building there. Nothing the tour draws depends on the target's pointer
+width, so on the same clock and input it draws the same frames in
+WebAssembly as natively, which zui-web's `test-demo` checks.
 
 ## Conformance
 
