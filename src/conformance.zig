@@ -1,5 +1,6 @@
 //! Runs zui's renderer suite in a sokol_app window, once into the window's
-//! swapchain and once into each format of an `.offscreen` surface, and
+//! swapchain, once into each format of an `.offscreen` surface and once
+//! into a multisampled one, and
 //! exits with an error when the renderer does not conform. It always
 //! renders with OpenGL, so each frame can be read back before the window
 //! presents it.
@@ -24,12 +25,12 @@ const height = zui_testing.renderer_viewport[1];
 
 const Target = union(enum) {
     swapchain,
-    offscreen: zui.OutputFormat,
+    offscreen: struct { format: zui.OutputFormat, sample_count: i32 = 1 },
 
     fn description(target: Target) []const u8 {
         return switch (target) {
             .swapchain => "into sokol_app's swapchain",
-            .offscreen => |format| switch (format) {
+            .offscreen => |offscreen| if (offscreen.sample_count > 1) "into an .sdr offscreen image with 4 samples per pixel" else switch (offscreen.format) {
                 .sdr => "into an .sdr offscreen image",
                 .scrgb_fp16 => "into an .scrgb_fp16 offscreen image",
             },
@@ -37,7 +38,12 @@ const Target = union(enum) {
     }
 };
 
-const targets = [_]Target{ .swapchain, .{ .offscreen = .sdr }, .{ .offscreen = .scrgb_fp16 } };
+const targets = [_]Target{
+    .swapchain,
+    .{ .offscreen = .{ .format = .sdr } },
+    .{ .offscreen = .{ .format = .scrgb_fp16 } },
+    .{ .offscreen = .{ .format = .sdr, .sample_count = 4 } },
+};
 
 const WindowHarness = struct {
     pub const config = zui_sokol.config(.{});
@@ -66,7 +72,10 @@ const WindowHarness = struct {
                 std.debug.assert(size[0] == sapp.width() and size[1] == sapp.height());
                 return .library;
             },
-            .offscreen => |format| return .{ .offscreen = .{ .size = size, .format = format } },
+            .offscreen => |offscreen| {
+                self.drawn.offscreen_sample_count = offscreen.sample_count;
+                return .{ .offscreen = .{ .size = size, .format = offscreen.format } };
+            },
         }
     }
 
@@ -75,10 +84,10 @@ const WindowHarness = struct {
     pub fn endDraw(self: *WindowHarness) void {
         switch (self.target) {
             .swapchain => glReadPixels(0, 0, width, height, gl_rgba, gl_unsigned_byte, &self.read_back),
-            .offscreen => |format| {
+            .offscreen => |offscreen| {
                 const texture = sg.glQueryImageInfo(self.drawn.offscreenImage());
                 glBindTexture(texture.tex_target, texture.tex[@intCast(texture.active_slot)]);
-                switch (format) {
+                switch (offscreen.format) {
                     .sdr => glGetTexImage(texture.tex_target, 0, gl_rgba, gl_unsigned_byte, &self.read_back),
                     .scrgb_fp16 => glGetTexImage(texture.tex_target, 0, gl_rgba, gl_float, &self.extended_read_back),
                 }
@@ -158,7 +167,7 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("zui_testing.expectRendererConforms: zui_sokol.Renderer failed with error.{t} drawing {s}\n", .{ err, harness.target.description() });
         return err;
     } orelse {
-        std.debug.print("zui_sokol.Renderer passes zui's renderer suite into its swapchain and into .sdr and .scrgb_fp16 offscreen images\n", .{});
+        std.debug.print("zui_sokol.Renderer passes zui's renderer suite into its swapchain, into .sdr and .scrgb_fp16 offscreen images, and into a multisampled .sdr one\n", .{});
         return;
     };
     std.debug.print("zui_testing.expectRendererConforms: zui_sokol.Renderer {s}, drawing {s}\n", .{ violation.description(), harness.target.description() });

@@ -38,15 +38,19 @@ pub const Destination = struct {
 /// What an `.offscreen` surface is drawn into: an image of its size and
 /// output format, recorded by a sokol_gl context of its own. In
 /// `.scrgb_fp16` it holds linear light, drawn through the `linear_light`
-/// shader.
+/// shader. With more than one sample per pixel it is drawn multisampled and
+/// resolved into `image` at the end of each pass.
 pub const OffscreenTarget = struct {
     format: zui.OutputFormat = .sdr,
     size: [2]i32 = .{ 0, 0 },
+    sample_count: i32 = 1,
     context: sgl.Context = .{},
     linear_light_shader: sg.Shader = .{},
     pipeline: sgl.Pipeline = .{},
     image: sg.Image = .{},
+    multisampled_image: sg.Image = .{},
     attachment: sg.View = .{},
+    resolve_attachment: sg.View = .{},
 
     pub fn deinit(self: *OffscreenTarget) void {
         self.destroy();
@@ -55,32 +59,41 @@ pub const OffscreenTarget = struct {
     }
 
     /// Before a frame is recorded. False when the GPU cannot render and
-    /// blend `format`.
-    pub fn prepare(self: *OffscreenTarget, size: [2]u32, format: zui.OutputFormat) bool {
+    /// blend `format`, or, for a `sample_count` above 1, multisample it.
+    pub fn prepare(self: *OffscreenTarget, size: [2]u32, format: zui.OutputFormat, sample_count: i32) bool {
         const pixel_format = colorFormat(format);
         const capabilities = sg.queryPixelformat(pixel_format);
         if (!capabilities.render or !capabilities.blend) return false;
+        if (sample_count > 1 and !capabilities.msaa) return false;
         const signed_size: [2]i32 = .{ @intCast(@max(size[0], 1)), @intCast(@max(size[1], 1)) };
-        if (self.image.id != 0 and self.format == format and std.meta.eql(self.size, signed_size)) return true;
+        if (self.image.id != 0 and self.format == format and self.sample_count == sample_count and std.meta.eql(self.size, signed_size)) return true;
         self.destroy();
         self.format = format;
         self.size = signed_size;
-        self.context = sgl.makeContext(.{ .max_vertices = 1 << 19, .max_commands = 1 << 14, .color_format = pixel_format, .depth_format = .NONE, .sample_count = 1 });
+        self.sample_count = sample_count;
+        self.context = sgl.makeContext(.{ .max_vertices = 1 << 19, .max_commands = 1 << 14, .color_format = pixel_format, .depth_format = .NONE, .sample_count = sample_count });
         var desc = blendingPipeline();
         if (format == .scrgb_fp16) {
             if (self.linear_light_shader.id == 0) self.linear_light_shader = sg.makeShader(linear_light.linearLightShaderDesc(sg.queryBackend()));
             desc.shader = self.linear_light_shader;
         }
         self.pipeline = sgl.contextMakePipeline(self.context, desc);
-        self.image = sg.makeImage(.{ .usage = .{ .color_attachment = true }, .width = signed_size[0], .height = signed_size[1], .pixel_format = pixel_format, .sample_count = 1 });
-        self.attachment = sg.makeView(.{ .color_attachment = .{ .image = self.image } });
+        if (sample_count > 1) {
+            self.multisampled_image = sg.makeImage(.{ .usage = .{ .color_attachment = true }, .width = signed_size[0], .height = signed_size[1], .pixel_format = pixel_format, .sample_count = sample_count });
+            self.attachment = sg.makeView(.{ .color_attachment = .{ .image = self.multisampled_image } });
+            self.image = sg.makeImage(.{ .usage = .{ .resolve_attachment = true }, .width = signed_size[0], .height = signed_size[1], .pixel_format = pixel_format, .sample_count = 1 });
+            self.resolve_attachment = sg.makeView(.{ .resolve_attachment = .{ .image = self.image } });
+        } else {
+            self.image = sg.makeImage(.{ .usage = .{ .color_attachment = true }, .width = signed_size[0], .height = signed_size[1], .pixel_format = pixel_format, .sample_count = 1 });
+            self.attachment = sg.makeView(.{ .color_attachment = .{ .image = self.image } });
+        }
         return true;
     }
 
     pub fn destination(self: *const OffscreenTarget) Destination {
         return .{
             .context = self.context,
-            .pixels = .{ .color_format = colorFormat(self.format), .depth_format = .NONE, .sample_count = 1 },
+            .pixels = .{ .color_format = colorFormat(self.format), .depth_format = .NONE, .sample_count = self.sample_count },
             .format = self.format,
             .is_swapchain = false,
         };
@@ -89,6 +102,7 @@ pub const OffscreenTarget = struct {
     pub fn pass(self: *const OffscreenTarget, action: sg.PassAction) sg.Pass {
         var attachments: sg.Attachments = .{};
         attachments.colors[0] = self.attachment;
+        attachments.resolves[0] = self.resolve_attachment;
         return .{ .action = action, .attachments = attachments };
     }
 
@@ -100,12 +114,14 @@ pub const OffscreenTarget = struct {
     }
 
     fn destroy(self: *OffscreenTarget) void {
-        if (self.attachment.id != 0) sg.destroyView(self.attachment);
-        if (self.image.id != 0) sg.destroyImage(self.image);
+        for ([_]sg.View{ self.attachment, self.resolve_attachment }) |view| if (view.id != 0) sg.destroyView(view);
+        for ([_]sg.Image{ self.image, self.multisampled_image }) |image| if (image.id != 0) sg.destroyImage(image);
         if (self.pipeline.id != 0) sgl.destroyPipeline(self.pipeline);
         if (self.context.id != 0) sgl.destroyContext(self.context);
         self.attachment = .{};
+        self.resolve_attachment = .{};
         self.image = .{};
+        self.multisampled_image = .{};
         self.pipeline = .{};
         self.context = .{};
     }

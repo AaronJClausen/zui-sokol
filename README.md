@@ -83,8 +83,9 @@ WebAssembly as natively, which zui-web's `test-demo` checks.
 
 `zig build conformance` runs zui's renderer suite
 (`zui_testing.expectRendererConforms`) against the renderer, in the first
-frame of a sokol_app window, three times: into the window's swapchain, and
-into an `.offscreen` surface in `.sdr` and in `.scrgb_fp16`.
+frame of a sokol_app window, four times: into the window's swapchain,
+into an `.offscreen` surface in `.sdr` and in `.scrgb_fp16`, and into an
+`.sdr` one with four samples per pixel.
 `src/conformance.zig` reads each frame back, from the swapchain with
 `glReadPixels` before the window presents it and from the offscreen image
 with `glGetTexImage`, so the suite checks
@@ -210,7 +211,10 @@ ui.release(frame);
 `zui_sokol.Renderer` implements zui's renderer contract. Its surfaces are
 `.library`, sokol_app's swapchain; `.offscreen`, an image of the renderer's
 own in the surface's size and format (`.sdr` or `.scrgb_fp16`), which
-`renderer.offscreenImage()` returns after `zuiSubmit`; and on Windows `.win32`: a native
+`renderer.offscreenImage()` returns after `zuiSubmit`, drawn with
+`renderer.offscreen_sample_count` samples per pixel (1 by default; 4
+smooths its edges as a window with `.sample_count = 4` does) and resolved
+to one; and on Windows `.win32`: a native
 host's window, such as [zui-host](https://github.com/AaronJClausen/zui-host)'s,
 which the renderer draws into without sokol_app, setting sokol_gfx up on
 a context of its own and presenting with vsync. With D3D11 (the default)

@@ -89,6 +89,11 @@ pub const Renderer = struct {
     transform_overflows: u32 = 0,
     materials: Materials = .{},
     offscreen: OffscreenTarget = .{},
+    /// Samples per pixel of an `.offscreen` surface: 4 smooths its edges as
+    /// sokol_app's swapchain does with `sample_count = 4`. Its image is
+    /// resolved to one sample per pixel; a count the GPU cannot draw makes
+    /// `zuiSubmit` fail with `error.UnsupportedSurface`.
+    offscreen_sample_count: i32 = 1,
     /// The format of the frame being recorded.
     format: zui.OutputFormat = .sdr,
 
@@ -154,7 +159,7 @@ pub const Renderer = struct {
         const target: Target = switch (surface) {
             .library => .{ .swapchain = sokol.glue.swapchain() },
             .win32 => if (comptime !draws_into_win32) return error.UnsupportedSurface else if (self.native) |*context| .{ .swapchain = context.swapchain() } else return error.UnsupportedSurface,
-            .offscreen => |offscreen| if (self.offscreen.prepare(offscreen.size, offscreen.format)) .offscreen else return error.UnsupportedSurface,
+            .offscreen => |offscreen| if (self.offscreen.prepare(offscreen.size, offscreen.format, self.offscreen_sample_count)) .offscreen else return error.UnsupportedSurface,
             else => return error.UnsupportedSurface,
         };
         const into: Destination, const size: [2]i32, const pipeline = switch (target) {
