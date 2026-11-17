@@ -1,5 +1,5 @@
 const std = @import("std");
-const truetype = @import("truetype.zig");
+const truetype = @import("zui_sokol_ui").truetype;
 
 /// Glyphs rasterized on first use and packed into rows of one RGBA image:
 /// white, with coverage in alpha, so a vertex color tints them. When it

@@ -1,5 +1,31 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const stbtt = @import("stb_truetype");
+
+comptime {
+    if (builtin.os.tag == .freestanding) {
+        @export(&pow, .{ .name = "zui_sokol_stbtt_pow" });
+        @export(&fmod, .{ .name = "zui_sokol_stbtt_fmod" });
+        @export(&cos, .{ .name = "zui_sokol_stbtt_cos" });
+        @export(&acos, .{ .name = "zui_sokol_stbtt_acos" });
+    }
+}
+
+fn pow(base: f64, exponent: f64) callconv(.c) f64 {
+    return std.math.pow(f64, base, exponent);
+}
+
+fn fmod(dividend: f64, divisor: f64) callconv(.c) f64 {
+    return @rem(dividend, divisor);
+}
+
+fn cos(angle: f64) callconv(.c) f64 {
+    return @cos(angle);
+}
+
+fn acos(cosine: f64) callconv(.c) f64 {
+    return std.math.acos(cosine);
+}
 
 /// A TrueType font, with what measuring needs read once. Measuring only
 /// reads it, so it is safe from many threads at once.

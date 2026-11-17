@@ -102,10 +102,7 @@ const WindowHarness = struct {
     pub fn image(_: *WindowHarness, color: zui.Color) zui_sokol.Image {
         const texels: [16 * 16]zui.Color = @splat(color);
         const solid = sg.makeImage(.{ .width = 16, .height = 16, .pixel_format = .RGBA8, .data = sg.asRange(&texels) });
-        return .{
-            .view = sg.makeView(.{ .texture = .{ .image = solid } }),
-            .sampler = sg.makeSampler(.{}),
-        };
+        return zui_sokol.imageOf(sg.makeView(.{ .texture = .{ .image = solid } }), sg.makeSampler(.{}));
     }
 
     pub fn material(_: *WindowHarness, color: zui.Color) zui_sokol.Material {

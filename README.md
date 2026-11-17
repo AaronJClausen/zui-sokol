@@ -56,6 +56,27 @@ to the next and previous, Ctrl+= and Ctrl+- zoom (through
 `FrameParams.zoom`), Ctrl+L declares a frame at every refresh to watch the
 costs live, and Tab moves focus.
 
+## Without sokol
+
+An application that only declares frames, for a renderer elsewhere to
+draw, imports `zui_sokol_ui`, which does not import sokol: `Text`,
+`truetype`, `Material`, `Image`, the commands the renderer draws, and
+`config`, which `zui_sokol` re-exports and checks against its renderer.
+Without a C library, as on `wasm32-freestanding`, its stb_truetype
+allocates nothing: it measures every font, and would rasterize no glyph.
+The tour declares its `Ui` through it, so `zui_sokol_tour` builds where
+sokol does not, and given a freestanding target, zui-sokol's build makes
+only those two modules:
+
+```zig
+const zui_sokol = b.dependency("zui_sokol", .{ .target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .freestanding }) });
+module.addImport("zui_sokol_tour", zui_sokol.module("zui_sokol_tour"));
+```
+
+`zig build check` compiles and links `examples/tour_freestanding.zig`,
+the tour declaring a frame for `wasm32-freestanding`, so the tour keeps
+building there.
+
 ## Conformance
 
 `zig build conformance` runs zui's renderer suite
@@ -101,7 +122,7 @@ building zui-sokol never runs sokol-shdc. After changing the GLSL, run
 | `rectangle` | sokol_gl quads, or a triangle fan with each corner's own radius |
 | `border` | a ring of triangles inside the bounds, with per-edge widths and per-corner radii |
 | `text` | `FontId` 0–5: sokol_debugtext, one call per wrapped line, with letter spacing placing each glyph on its own. From 6: a TrueType font added with `Text.addTrueTypeFont`, its glyphs rasterized by stb_truetype at the text's size in physical pixels into a glyph atlas and drawn as sokol_gl quads |
-| `image` | a textured sokol_gl quad colored by the tint, or a triangle fan with each corner's own radius (`zui_sokol.Image`: a view and a sampler) |
+| `image` | a textured sokol_gl quad colored by the tint, or a triangle fan with each corner's own radius (`zui_sokol.Image`: the ids of a view and a sampler, made by `zui_sokol.imageOf(view, sampler)`) |
 | `gradient` | the rounded outline cut into bands at most 4 units long across the gradient (64 at most), each vertex colored by `colorAt`, so sokol_gl's sRGB blend between vertices stays within a step of zui's OKLab one |
 | `shadow` | the rounded box at the offset, grown by the spread, in the shadow's color, then six rings out to the blur, fading to clear along a smoothstep |
 | `backdrop_blur` | the frame is drawn into an offscreen target like the swapchain, and paused at each blur: a Gaussian along x, then along y, of what lies under the element, its edge pixels repeated, summed tap by tap into two float targets the size of the frame: RGBA32F (16 bytes a pixel), or RGBA16F where the GPU cannot render, blend and filter that, though half floats round each sum as the driver chooses, and one driver's blur can differ from another's by several color steps; the frame resumes with the result drawn inside the rounded outline and the tint over it, and is copied to the swapchain at the end. A frame without one is drawn as before |

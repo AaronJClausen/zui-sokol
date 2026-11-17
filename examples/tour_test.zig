@@ -1,5 +1,5 @@
 const std = @import("std");
-const zui_sokol = @import("zui_sokol");
+const zui_sokol_ui = @import("zui_sokol_ui");
 const kit = @import("kit.zig");
 const zui = kit.zui;
 const Ui = kit.Ui;
@@ -8,7 +8,7 @@ const App = @import("app.zig").App;
 const testing = std.testing;
 
 const Harness = struct {
-    text: zui_sokol.Text = .{},
+    text: zui_sokol_ui.Text = .{},
     ui: Ui = undefined,
     app: *App = undefined,
     frame_number: u64 = 0,
@@ -109,7 +109,7 @@ test "every screen fits the default window: no scrolling, no text cut off" {
 }
 
 test "the tour's TrueType fonts load and measure proportionally" {
-    var text: zui_sokol.Text = .{};
+    var text: zui_sokol_ui.Text = .{};
     try kit.addFonts(&text);
     for ([_]u16{ kit.body_font, kit.bold_font }) |font| {
         const narrow = text.zuiMeasure("iiii", .{ .font = font, .size = 16, .letter_spacing = 0 });

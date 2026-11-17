@@ -3,7 +3,7 @@ const kit = @import("../kit.zig");
 const zui = kit.zui;
 const Ui = kit.Ui;
 const Shell = kit.Shell;
-const Material = @import("zui_sokol").Material;
+const Material = @import("zui_sokol_ui").Material;
 
 const patterns = std.enums.values(Material.Pattern);
 

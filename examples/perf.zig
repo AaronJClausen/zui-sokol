@@ -1,5 +1,5 @@
 const std = @import("std");
-const zui = @import("zui_sokol").zui;
+const zui = @import("zui_sokol_ui").zui;
 
 /// Why the host declared a zui frame instead of redrawing the one it holds.
 pub const FrameReason = enum {

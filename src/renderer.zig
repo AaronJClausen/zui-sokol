@@ -6,13 +6,14 @@ const sgl = sokol.gl;
 const sdtx = sokol.debugtext;
 const builtin = @import("builtin");
 const options = @import("zui_sokol_options");
-const Text = @import("root.zig").Text;
-const Image = @import("root.zig").Image;
-const truetype = @import("truetype.zig");
+const zui_sokol_ui = @import("zui_sokol_ui");
+const Text = zui_sokol_ui.Text;
+const Image = zui_sokol_ui.Image;
+const truetype = zui_sokol_ui.truetype;
 const GlyphAtlas = @import("glyph_atlas.zig").GlyphAtlas;
 const BackdropBlurs = @import("backdrop_blur.zig").BackdropBlurs;
 const materials = @import("materials.zig");
-const Material = materials.Material;
+const Material = zui_sokol_ui.Material;
 const Materials = materials.Materials;
 const bitmap_glyphs = @import("bitmap_glyphs.zig");
 const BitmapGlyphs = bitmap_glyphs.BitmapGlyphs;
@@ -47,7 +48,7 @@ const native = if (!draws_into_win32) struct {
 /// sokol_debugtext would write its colors' sRGB encoding.
 pub const Renderer = struct {
     pub const zui_surfaces: zui.SurfaceKinds = if (draws_into_win32) .initMany(&.{ .library, .offscreen, .win32 }) else .initMany(&.{ .library, .offscreen });
-    pub const zui_commands: zui.CommandSet = .initMany(&.{ .gradient, .shadow, .backdrop_blur, .transform, .material });
+    pub const zui_commands: zui.CommandSet = zui_sokol_ui.commands;
     pub const zui_extended_color = true;
     pub const ImageHandle = Image;
     pub const MaterialHandle = Material;
@@ -74,7 +75,8 @@ pub const Renderer = struct {
     /// pay for it.
     glyphs: ?*GlyphAtlas = null,
     glyph_image: sg.Image = .{},
-    glyph_texture: Image = .{ .view = .{}, .sampler = .{} },
+    glyph_view: sg.View = .{},
+    glyph_sampler: sg.Sampler = .{},
     /// Times a frame needed more glyphs than the atlas holds; the ones
     /// that did not fit were not drawn.
     glyph_overflows: u32 = 0,
@@ -127,7 +129,7 @@ pub const Renderer = struct {
         self.offscreen.deinit();
         self.bitmap_glyphs.deinit();
         self.destroyGlyphTexture();
-        if (self.glyph_texture.sampler.id != 0) sg.destroySampler(self.glyph_texture.sampler);
+        if (self.glyph_sampler.id != 0) sg.destroySampler(self.glyph_sampler);
         if (self.glyphs) |atlas| std.heap.page_allocator.destroy(atlas);
         sgl.destroyPipeline(self.pipeline);
         sgl.destroyPipeline(self.alpha_coverage_pipeline);
@@ -232,7 +234,7 @@ pub const Renderer = struct {
                 },
                 .text => |line| if (self.text.trueTypeFont(line.style.font)) |font| {
                     recorder.beginShapes();
-                    if (self.glyphs) |atlas| drawTrueTypeText(atlas, self.glyph_texture, font, line.content, bounds, line.style, .of(line.style.color, format), pixels_per_unit);
+                    if (self.glyphs) |atlas| drawTrueTypeText(atlas, self.glyph_view, self.glyph_sampler, font, line.content, bounds, line.style, .of(line.style.color, format), pixels_per_unit);
                 } else if (transforms.isActive() or !into.is_swapchain) {
                     recorder.beginShapes();
                     self.bitmap_glyphs.draw(line.content, bounds, line.style.font, self.text.glyphSize(line.style.size), line.style.letter_spacing, .of(line.style.color, format));
@@ -406,8 +408,8 @@ pub const Renderer = struct {
             .pixel_format = .RGBA8,
             .data = sg.asRange(&atlas.pixels),
         });
-        self.glyph_texture.view = sg.makeView(.{ .texture = .{ .image = self.glyph_image } });
-        if (self.glyph_texture.sampler.id == 0) self.glyph_texture.sampler = sg.makeSampler(.{
+        self.glyph_view = sg.makeView(.{ .texture = .{ .image = self.glyph_image } });
+        if (self.glyph_sampler.id == 0) self.glyph_sampler = sg.makeSampler(.{
             .min_filter = .LINEAR,
             .mag_filter = .LINEAR,
             .wrap_u = .CLAMP_TO_EDGE,
@@ -417,9 +419,9 @@ pub const Renderer = struct {
     }
 
     fn destroyGlyphTexture(self: *Renderer) void {
-        if (self.glyph_texture.view.id != 0) sg.destroyView(self.glyph_texture.view);
+        if (self.glyph_view.id != 0) sg.destroyView(self.glyph_view);
         if (self.glyph_image.id != 0) sg.destroyImage(self.glyph_image);
-        self.glyph_texture.view = .{};
+        self.glyph_view = .{};
         self.glyph_image = .{};
     }
 };
@@ -846,7 +848,7 @@ fn snapToPixel(value: f32, pixels_per_unit: f32) f32 {
 
 /// The pen advances exactly as `Font.measure` measured, so the text fills
 /// the bounds zui laid out; each glyph's quad starts on a whole pixel.
-fn drawTrueTypeText(atlas: *const GlyphAtlas, texture: Image, font: *const truetype.Font, content: []const u8, bounds: zui.Rect, style: anytype, color: VertexColor, pixels_per_unit: f32) void {
+fn drawTrueTypeText(atlas: *const GlyphAtlas, view: sg.View, sampler: sg.Sampler, font: *const truetype.Font, content: []const u8, bounds: zui.Rect, style: anytype, color: VertexColor, pixels_per_unit: f32) void {
     const pixel_size = rasterPixelSize(style.size, pixels_per_unit);
     const units_per_raster_pixel = style.size / @as(f32, @floatFromInt(pixel_size));
     const scale = font.scaleFor(style.size);
@@ -855,7 +857,7 @@ fn drawTrueTypeText(atlas: *const GlyphAtlas, texture: Image, font: *const truet
     const texel: f32 = 1.0 / @as(f32, GlyphAtlas.side);
 
     sgl.enableTexture();
-    sgl.texture(texture.view, texture.sampler);
+    sgl.texture(view, sampler);
     color.apply();
     sgl.beginQuads();
     var pen = bounds.x;
@@ -885,7 +887,7 @@ fn drawTrueTypeText(atlas: *const GlyphAtlas, texture: Image, font: *const truet
 /// A rounded image is a fan of textured triangles from its center.
 fn drawImage(image: Image, bounds: zui.Rect, tint: VertexColor, radius: zui.CornerRadius, corner_segments: u8) void {
     sgl.enableTexture();
-    sgl.texture(image.view, image.sampler);
+    sgl.texture(.{ .id = image.view.id }, .{ .id = image.sampler.id });
     tint.apply();
     if (!hasRoundedCorners(radius) or bounds.width <= 0 or bounds.height <= 0) {
         sgl.beginQuads();

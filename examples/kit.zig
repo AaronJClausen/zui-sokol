@@ -2,10 +2,10 @@
 //! palettes, and the `Shell` each screen declares through.
 
 const std = @import("std");
-const zui_sokol = @import("zui_sokol");
-pub const zui = zui_sokol.zui;
-pub const zui_widgets = zui_sokol.zui_widgets;
-pub const zui_reflect = zui_sokol.zui_reflect;
+const zui_sokol_ui = @import("zui_sokol_ui");
+pub const zui = zui_sokol_ui.zui;
+pub const zui_widgets = @import("zui_widgets");
+pub const zui_reflect = @import("zui_reflect");
 pub const zui_async = @import("zui_async");
 pub const Perf = @import("perf.zig").Perf;
 const mission = @import("screens/mission_control.zig");
@@ -19,7 +19,7 @@ pub const Sources = struct {
     tile_outcomes: gallery.TileOutcomesSource = .{},
 };
 
-pub const Ui = zui.Context(zui_sokol.config(.{
+pub const Ui = zui.Context(zui_sokol_ui.config(.{
     .Sources = Sources,
     .limits = .{
         .max_elements = 16384,
@@ -37,7 +37,7 @@ pub const TextStyle = Ui.TextStyle;
 
 /// Atkinson Hyperlegible, from the Braille Institute, under the SIL Open
 /// Font License (fonts/OFL.txt).
-pub const body_font: u16 = zui_sokol.Text.bitmap_font_count;
+pub const body_font: u16 = zui_sokol_ui.Text.bitmap_font_count;
 pub const bold_font: u16 = body_font + 1;
 /// One of sokol_debugtext's bitmap fonts, for code and logs: the Amstrad
 /// CPC's, since the KC85 fonts draw `{` and `}` as umlauts.
@@ -45,7 +45,7 @@ pub const mono_font: u16 = 3;
 
 /// Call once, before the first frame, so `body_font` and `bold_font` name
 /// the fonts they say.
-pub fn addFonts(text: *zui_sokol.Text) error{ InvalidFont, TooManyFonts }!void {
+pub fn addFonts(text: *zui_sokol_ui.Text) error{ InvalidFont, TooManyFonts }!void {
     const regular = try text.addTrueTypeFont(@embedFile("fonts/AtkinsonHyperlegible-Regular.ttf"));
     const bold = try text.addTrueTypeFont(@embedFile("fonts/AtkinsonHyperlegible-Bold.ttf"));
     std.debug.assert(regular == body_font and bold == bold_font);
