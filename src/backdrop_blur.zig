@@ -14,13 +14,19 @@ pub const BackdropBlurs = struct {
     pub const max_per_frame = 16;
     const max_vertices = 1 << 17;
     const max_commands = 1 << 14;
-    const float_format: sg.PixelFormat = .RGBA16F;
+    /// Each tap is added to the target by blending, rounded to its format
+    /// every time. Drivers round half floats differently, and over a
+    /// blur's hundreds of additions Mesa's llvmpipe ends 4 color steps
+    /// darker than other GPUs do, so half floats are only the fallback.
+    const accumulation_formats = [_]sg.PixelFormat{ .RGBA32F, .RGBA16F };
 
     /// False until a frame first has a blur, which then makes the context,
     /// pipelines and targets.
     created: bool = false,
-    /// The GPU cannot render, blend and filter `float_format`.
-    unsupported: bool = false,
+    /// The first of `accumulation_formats` the GPU can render, blend and
+    /// filter, which the blurs are summed in; `.NONE` until created, and
+    /// after if it can do so with none of them.
+    accumulation_format: sg.PixelFormat = .NONE,
     /// What this frame can blur in: set up, sized to the destination.
     ready: bool = false,
     /// Times a blur was drawn as its tint alone, because the GPU cannot
@@ -86,7 +92,7 @@ pub const BackdropBlurs = struct {
         } else false;
         if (!has_blur or size[0] <= 0 or size[1] <= 0) return;
         if (!self.created) self.create();
-        if (self.unsupported) return;
+        if (self.accumulation_format == .NONE) return;
         const same_destination = if (self.scene_destination) |scene| scene.context.id == into.context.id and std.meta.eql(scene.pixels, into.pixels) else false;
         if (!same_destination) {
             if (self.replace_pipeline.id != 0) sgl.destroyPipeline(self.replace_pipeline);
@@ -263,13 +269,12 @@ pub const BackdropBlurs = struct {
 
     fn create(self: *BackdropBlurs) void {
         self.created = true;
-        const format = sg.queryPixelformat(float_format);
-        if (!format.render or !format.blend or !format.filter) {
-            self.unsupported = true;
-            return;
-        }
+        self.accumulation_format = for (accumulation_formats) |candidate| {
+            const format = sg.queryPixelformat(candidate);
+            if (format.render and format.blend and format.filter) break candidate;
+        } else return;
         self.flips_render_target_rows = !sg.queryFeatures().origin_top_left;
-        self.context = sgl.makeContext(.{ .max_vertices = max_vertices, .max_commands = max_commands, .color_format = float_format, .depth_format = .NONE, .sample_count = 1 });
+        self.context = sgl.makeContext(.{ .max_vertices = max_vertices, .max_commands = max_commands, .color_format = self.accumulation_format, .depth_format = .NONE, .sample_count = 1 });
         const step = 1.0 / 255.0;
         self.coarse_pipeline = sgl.contextMakePipeline(self.context, accumulating(.ONE, .{}));
         self.fine_pipeline = sgl.contextMakePipeline(self.context, accumulating(.BLEND_COLOR, .{ .r = step, .g = step, .b = step, .a = step }));
@@ -304,7 +309,7 @@ pub const BackdropBlurs = struct {
         }
         self.scene.texture = sg.makeView(.{ .texture = .{ .image = if (multisampled) self.scene.resolve else self.scene.color } });
         for ([2]*FloatTarget{ &self.blurred_along_x, &self.blurred }) |target| {
-            target.image = sg.makeImage(.{ .usage = .{ .color_attachment = true }, .width = size[0], .height = size[1], .pixel_format = float_format, .sample_count = 1 });
+            target.image = sg.makeImage(.{ .usage = .{ .color_attachment = true }, .width = size[0], .height = size[1], .pixel_format = self.accumulation_format, .sample_count = 1 });
             target.attachment = sg.makeView(.{ .color_attachment = .{ .image = target.image } });
             target.texture = sg.makeView(.{ .texture = .{ .image = target.image } });
         }

@@ -104,7 +104,7 @@ building zui-sokol never runs sokol-shdc. After changing the GLSL, run
 | `image` | a textured sokol_gl quad colored by the tint, or a triangle fan with each corner's own radius (`zui_sokol.Image`: a view and a sampler) |
 | `gradient` | the rounded outline cut into bands at most 4 units long across the gradient (64 at most), each vertex colored by `colorAt`, so sokol_gl's sRGB blend between vertices stays within a step of zui's OKLab one |
 | `shadow` | the rounded box at the offset, grown by the spread, in the shadow's color, then six rings out to the blur, fading to clear along a smoothstep |
-| `backdrop_blur` | the frame is drawn into an offscreen target like the swapchain, and paused at each blur: a Gaussian along x, then along y, of what lies under the element, its edge pixels repeated, into RGBA16F targets; the frame resumes with the result drawn inside the rounded outline and the tint over it, and is copied to the swapchain at the end. A frame without one is drawn as before |
+| `backdrop_blur` | the frame is drawn into an offscreen target like the swapchain, and paused at each blur: a Gaussian along x, then along y, of what lies under the element, its edge pixels repeated, summed tap by tap into two float targets the size of the frame: RGBA32F (16 bytes a pixel), or RGBA16F where the GPU cannot render, blend and filter that, though half floats round each sum as the driver chooses, and one driver's blur can differ from another's by several color steps; the frame resumes with the result drawn inside the rounded outline and the tint over it, and is copied to the swapchain at the end. A frame without one is drawn as before |
 | `material` | `zui_sokol.Material`, a pattern between two colors (`solid`, `sheen`, `aurora`) moved by its phase: the rounded outline as a triangle fan, drawn by the material shader at the start of its own layer, before the layer's sokol_gl shapes. The shader and pipeline are made on the first frame with a material |
 | colors | `zui.ExtendedColor` (the renderer declares `zui_extended_color`) or `zui.Color`, as the application declares them. Into an 8-bit target an extended color is clamped into SDR and sRGB's gamut and encoded to 8 bits, as `ExtendedColor.toColor` does. Into an `.scrgb_fp16` offscreen image (RGBA16F) the frame is drawn in linear light through a shader of the renderer's own, which decodes each 8-bit sRGB vertex color and texel; a color brighter than SDR white is carried divided by its brightest channel, with that channel in sokol_gl's per-vertex point size, which the shader multiplies back. Negative (out-of-sRGB-gamut) channels are still clamped there, bitmap text is drawn by sokol_gl rather than sokol_debugtext, and materials mix their colors in linear light |
 | `clip_begin` / `clip_end` | `sg.applyScissorRect` per layer, at the record's `scale × zoom`; inside a transform, the box around the clip in the window |
@@ -125,7 +125,8 @@ Current limits:
   pixels**, the widest its 129 taps per axis reach, and a frame blurs at
   most 16 elements; the rest draw their tint alone, counted in
   `Renderer.backdrop_blurs.lowered`, as do all of them on a GPU that
-  cannot render, blend and filter RGBA16F.
+  cannot render, blend and filter RGBA32F or RGBA16F. The format the
+  blurs are summed in is `Renderer.backdrop_blurs.accumulation_format`.
 - **A frame draws at most 256 materials**, of 32,768 vertices in all;
   the rest draw their fallback background, counted in
   `Renderer.materials.lowered`, as do all of them on a backend sokol-shdc
