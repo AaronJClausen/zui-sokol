@@ -132,7 +132,7 @@ pub fn build(b: *std.Build) void {
 }
 
 /// Checked in as `.glsl.zig`, so that building zui_sokol never runs sokol-shdc.
-const shaders = [_][]const u8{ "src/material", "src/linear_light" };
+const shaders = [_][]const u8{ "src/material", "src/linear_light", "src/present_scrgb" };
 
 /// Zig 0.16's own ELF linker rejects the R_X86_64_PC64 relocations in the
 /// `.sframe` section that GCC 16's crt1.o carries, and LLD crashes the
@@ -166,6 +166,7 @@ fn addRendererOptions(b: *std.Build, module: *std.Build.Module, opengl: bool) vo
         module.addCSourceFile(.{ .file = b.path("src/composition.c") });
         module.linkSystemLibrary("d3d11", .{});
         module.linkSystemLibrary("dxgi", .{});
+        module.linkSystemLibrary("user32", .{});
     }
 }
 

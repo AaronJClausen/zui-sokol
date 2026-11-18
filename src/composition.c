@@ -1,14 +1,11 @@
-// A Direct3D 11 swapchain composed into a Win32 window by DirectComposition,
-// with premultiplied alpha, so that where the renderer draws nothing the
-// window's system backdrop (Mica, Acrylic) shows, and what it draws covers it.
 // A window swapchain's alpha is ignored by DWM; only a composition swapchain
-// keeps it.
+// keeps it, so the window's system backdrop shows where nothing is drawn.
 
 #define COBJMACROS
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <d3d11.h>
-#include <dxgi1_2.h>
+#include <dxgi1_4.h>
 #include <stdlib.h>
 
 // mingw's dcomp.h declares its interfaces for C++ only, so the three calls
@@ -26,6 +23,7 @@ enum {
 static const GUID iid_dxgi_device = {0x54ec77fa, 0x1377, 0x44e6, {0x8c, 0x32, 0x88, 0xfd, 0x5f, 0x44, 0xc8, 0x4c}};
 static const GUID iid_dxgi_factory2 = {0x50c83a1c, 0xe072, 0x4c48, {0x87, 0xb0, 0x36, 0x30, 0xfa, 0x36, 0xa6, 0xd0}};
 static const GUID iid_d3d11_texture2d = {0x6f15aaf2, 0xd208, 0x4e89, {0x9a, 0xb4, 0x48, 0x95, 0x35, 0xd3, 0x4f, 0x9c}};
+static const GUID iid_dxgi_swapchain3 = {0x94d99bdb, 0xf1f8, 0x4ab0, {0xb2, 0x36, 0x7d, 0xa0, 0x17, 0x0e, 0xda, 0xb1}};
 static const GUID iid_composition_device = {0xc37ea93a, 0xe7aa, 0x450d, {0xb1, 0x6f, 0x97, 0x46, 0xcb, 0x04, 0x07, 0xf3}};
 
 typedef struct zui_sokol_composition {
@@ -39,8 +37,16 @@ typedef struct zui_sokol_composition {
     composition_object *target;
     composition_object *visual;
     HMODULE dcomp_library;
+    HWND hwnd;
     UINT width, height;
+    BOOL in_scrgb;
+    float sdr_white_scale;
+    ULONGLONG sdr_white_read_at;
 } zui_sokol_composition;
+
+// Read at most this often, since the SDR content brightness slider tells
+// no window when it moves.
+enum { sdr_white_read_interval_ms = 500, max_display_paths = 32 };
 
 static void release(void *object) {
     if (object) IUnknown_Release((IUnknown *)object);
@@ -98,8 +104,10 @@ HRESULT zui_sokol_composition_create(HWND hwnd, UINT width, UINT height, zui_sok
     *out = NULL;
     zui_sokol_composition *self = calloc(1, sizeof(*self));
     if (!self) return E_OUTOFMEMORY;
+    self->hwnd = hwnd;
     self->width = width ? width : 1;
     self->height = height ? height : 1;
+    self->sdr_white_scale = 1;
 
     IDXGIDevice *dxgi_device = NULL;
     IDXGIAdapter *adapter = NULL;
@@ -148,25 +156,83 @@ HRESULT zui_sokol_composition_create(HWND hwnd, UINT width, UINT height, zui_sok
 void *zui_sokol_composition_device(zui_sokol_composition *self) { return self->device; }
 void *zui_sokol_composition_device_context(zui_sokol_composition *self) { return self->context; }
 
-// Resizes the buffers to the window's client area when it changed, and
-// gives the views to draw this frame into.
-HRESULT zui_sokol_composition_frame(zui_sokol_composition *self, UINT width, UINT height, void **render_view, void **depth_stencil_view) {
+static HRESULT set_color_space(zui_sokol_composition *self, BOOL in_scrgb) {
+    IDXGISwapChain3 *swapchain3 = NULL;
+    HRESULT result = IDXGISwapChain1_QueryInterface(self->swapchain, &iid_dxgi_swapchain3, (void **)&swapchain3);
+    if (FAILED(result)) return result;
+    result = IDXGISwapChain3_SetColorSpace1(swapchain3, in_scrgb ? DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709 : DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
+    release(swapchain3);
+    return result;
+}
+
+// Resizes the buffers to the window's client area, and changes their format
+// between 8-bit sRGB and half-float scRGB, when either changed, and gives
+// the views to draw this frame into.
+HRESULT zui_sokol_composition_frame(zui_sokol_composition *self, UINT width, UINT height, BOOL in_scrgb, void **render_view, void **depth_stencil_view) {
     width = width ? width : 1;
     height = height ? height : 1;
-    if (width != self->width || height != self->height) {
+    in_scrgb = in_scrgb != 0;
+    if (width != self->width || height != self->height || in_scrgb != self->in_scrgb) {
         release_views(self);
         ID3D11DeviceContext_OMSetRenderTargets(self->context, 0, NULL, NULL);
         ID3D11DeviceContext_Flush(self->context);
-        HRESULT result = IDXGISwapChain1_ResizeBuffers(self->swapchain, 0, width, height, DXGI_FORMAT_UNKNOWN, 0);
+        DXGI_FORMAT format = in_scrgb ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_B8G8R8A8_UNORM;
+        HRESULT result = IDXGISwapChain1_ResizeBuffers(self->swapchain, 0, width, height, format, 0);
         if (FAILED(result)) return result;
         self->width = width;
         self->height = height;
+        if (in_scrgb != self->in_scrgb) {
+            result = set_color_space(self, in_scrgb);
+            if (FAILED(result)) return result;
+            self->in_scrgb = in_scrgb;
+        }
         result = create_views(self);
         if (FAILED(result)) return result;
     }
     *render_view = self->render_view;
     *depth_stencil_view = self->depth_stencil_view;
     return S_OK;
+}
+
+static BOOL read_sdr_white_scale(HWND hwnd, float *scale) {
+    MONITORINFOEXW monitor = {.cbSize = sizeof(monitor)};
+    if (!GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), (MONITORINFO *)&monitor)) return FALSE;
+    DISPLAYCONFIG_PATH_INFO paths[max_display_paths];
+    DISPLAYCONFIG_MODE_INFO modes[2 * max_display_paths];
+    UINT32 path_count = max_display_paths, mode_count = 2 * max_display_paths;
+    if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &path_count, paths, &mode_count, modes, NULL) != ERROR_SUCCESS) return FALSE;
+    for (UINT32 index = 0; index < path_count; index++) {
+        DISPLAYCONFIG_SOURCE_DEVICE_NAME source = {.header = {
+            .type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
+            .size = sizeof(source),
+            .adapterId = paths[index].sourceInfo.adapterId,
+            .id = paths[index].sourceInfo.id,
+        }};
+        if (DisplayConfigGetDeviceInfo(&source.header) != ERROR_SUCCESS || wcscmp(source.viewGdiDeviceName, monitor.szDevice) != 0) continue;
+        DISPLAYCONFIG_SDR_WHITE_LEVEL white = {.header = {
+            .type = DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL,
+            .size = sizeof(white),
+            .adapterId = paths[index].targetInfo.adapterId,
+            .id = paths[index].targetInfo.id,
+        }};
+        if (DisplayConfigGetDeviceInfo(&white.header) != ERROR_SUCCESS) return FALSE;
+        // In thousandths of 80 nits, which is where scRGB puts 1.0.
+        *scale = (float)white.SDRWhiteLevel / 1000.0f;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+// What scRGB's 1.0, 80 nits, is multiplied by to show at the SDR white the
+// monitor shows other windows' white at; 1 when it cannot be read.
+float zui_sokol_composition_sdr_white_scale(zui_sokol_composition *self) {
+    ULONGLONG now = GetTickCount64();
+    if (self->sdr_white_read_at == 0 || now - self->sdr_white_read_at >= sdr_white_read_interval_ms) {
+        self->sdr_white_read_at = now;
+        float scale;
+        self->sdr_white_scale = read_sdr_white_scale(self->hwnd, &scale) && scale >= 1.0f ? scale : 1.0f;
+    }
+    return self->sdr_white_scale;
 }
 
 HRESULT zui_sokol_composition_present(zui_sokol_composition *self) {

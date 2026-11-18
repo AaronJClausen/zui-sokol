@@ -21,6 +21,7 @@ const destination = @import("destination.zig");
 const Destination = destination.Destination;
 const OffscreenTarget = destination.OffscreenTarget;
 const VertexColor = destination.VertexColor;
+const ScrgbPresent = @import("scrgb_present.zig").ScrgbPresent;
 
 /// On Windows the renderer draws into a native host's window with a
 /// context of its own: a Direct3D 11 swapchain composed into the window,
@@ -30,6 +31,8 @@ pub const draws_into_win32 = builtin.os.tag == .windows;
 /// On Linux it draws into a native host's Wayland surface with an OpenGL
 /// context made through EGL.
 pub const draws_into_wayland = builtin.os.tag == .linux;
+/// A composed window can hold half-float scRGB; an OpenGL one cannot.
+const presents_scrgb = draws_into_win32 and !options.opengl;
 const native_surface: ?zui.SurfaceKind = if (draws_into_win32) .win32 else if (draws_into_wayland) .wayland else null;
 const native = if (draws_into_win32)
     (if (options.opengl) @import("wgl.zig") else @import("composition.zig"))
@@ -54,11 +57,15 @@ else
 /// turned clip. A material is drawn by its own shader at the start of a
 /// layer, before the layer's shapes. In an `.scrgb_fp16` target every
 /// color is drawn in linear light, and bitmap text by sokol_gl, since
-/// sokol_debugtext would write its colors' sRGB encoding.
+/// sokol_debugtext would write its colors' sRGB encoding. A `.win32`
+/// surface in `.scrgb_fp16` is drawn so into an image, which is then
+/// copied into the window's half-float swapchain at the monitor's SDR
+/// white.
 pub const Renderer = struct {
     pub const zui_surfaces: zui.SurfaceKinds = if (native_surface) |kind| .initMany(&.{ .library, .offscreen, kind }) else .initMany(&.{ .library, .offscreen });
     pub const zui_commands: zui.CommandSet = zui_sokol_ui.commands;
     pub const zui_extended_color = true;
+    pub const zui_output_formats: zui.OutputFormats = if (presents_scrgb) .initMany(&.{ .sdr, .scrgb_fp16 }) else .initOne(.sdr);
     pub const ImageHandle = Image;
     pub const MaterialHandle = Material;
 
@@ -74,6 +81,9 @@ pub const Renderer = struct {
     alpha_coverage_pipeline: sgl.Pipeline,
     /// The surface keeps the alpha drawn, as a composed native window does.
     composes_alpha: bool = false,
+    /// This frame draws every shape again into the alpha channel: in a
+    /// composed window, where sokol_debugtext draws the bitmap text.
+    covers_alpha: bool = false,
     /// Paint order breaks once a frame needs more layers than this; zui's
     /// commands then share the last layer.
     layer_overflows: u32 = 0,
@@ -105,6 +115,7 @@ pub const Renderer = struct {
     offscreen_sample_count: i32 = 1,
     /// The format of the frame being recorded.
     format: zui.OutputFormat = .sdr,
+    scrgb_present: ScrgbPresent = .{},
 
     /// Call after `sokol.gfx.setup`.
     pub fn init(text: *const Text) Renderer {
@@ -144,6 +155,7 @@ pub const Renderer = struct {
         self.backdrop_blurs.deinit();
         self.materials.deinit();
         self.offscreen.deinit();
+        self.scrgb_present.deinit();
         self.bitmap_glyphs.deinit();
         self.destroyGlyphTexture();
         if (self.glyph_sampler.id != 0) sg.destroySampler(self.glyph_sampler);
@@ -167,25 +179,25 @@ pub const Renderer = struct {
     /// ui.release(frame);
     /// ```
     pub fn zuiSubmit(self: *Renderer, surface: zui.Surface, frame: anytype) error{UnsupportedSurface}!void {
-        const Target = union(enum) { swapchain: sg.Swapchain, offscreen };
         const target: Target = switch (surface) {
             .library => .{ .swapchain = sokol.glue.swapchain() },
-            .win32 => if (comptime !draws_into_win32) return error.UnsupportedSurface else if (self.native) |*context| .{ .swapchain = context.swapchain() } else return error.UnsupportedSurface,
+            .win32 => |window| if (comptime !draws_into_win32) return error.UnsupportedSurface else if (self.native) |*context| try self.win32Target(context, window.format) else return error.UnsupportedSurface,
             .wayland => if (comptime !draws_into_wayland) return error.UnsupportedSurface else if (self.native) |*context| .{ .swapchain = context.swapchain(physicalSize(frame.params)) } else return error.UnsupportedSurface,
             .offscreen => |offscreen| if (self.offscreen.prepare(offscreen.size, offscreen.format, self.offscreen_sample_count)) .offscreen else return error.UnsupportedSurface,
             else => return error.UnsupportedSurface,
         };
         const into: Destination, const size: [2]i32, const pipeline = switch (target) {
             .swapchain => |swapchain| .{ .swapchain(), .{ swapchain.width, swapchain.height }, self.pipeline },
-            .offscreen => .{ self.offscreen.destination(), self.offscreen.size, self.offscreen.pipeline },
+            .offscreen, .scrgb_window => .{ self.offscreen.destination(), self.offscreen.size, self.offscreen.pipeline },
         };
         self.format = into.format;
+        self.covers_alpha = self.composes_alpha and into.is_swapchain;
         const clear_value = clearValue(self.clear_color, into.format);
         var action: sg.PassAction = .{};
         action.colors[0] = .{ .load_action = .CLEAR, .clear_value = clear_value };
         const final_pass: sg.Pass = switch (target) {
             .swapchain => |swapchain| .{ .action = action, .swapchain = swapchain },
-            .offscreen => self.offscreen.pass(action),
+            .offscreen, .scrgb_window => self.offscreen.pass(action),
         };
         self.backdrop_blurs.prepare(frame.commands(), size, into);
         self.materials.prepare(frame.commands(), into.pixels);
@@ -204,8 +216,25 @@ pub const Renderer = struct {
             sgl.contextDrawLayer(into.context, present_layer);
             sg.endPass();
         }
+        if (comptime presents_scrgb) if (target == .scrgb_window) self.scrgb_present.draw(target.scrgb_window, self.offscreen.image, self.native.?.sdrWhiteScale());
         sg.commit();
         if (comptime native_surface) |kind| if (surface == kind) self.native.?.present();
+    }
+
+    const Target = union(enum) {
+        swapchain: sg.Swapchain,
+        offscreen,
+        /// Drawn into `offscreen` in `.scrgb_fp16`, then copied into this.
+        scrgb_window: sg.Swapchain,
+    };
+
+    fn win32Target(self: *Renderer, context: *native.Context, format: zui.OutputFormat) error{UnsupportedSurface}!Target {
+        if (comptime !presents_scrgb) return .{ .swapchain = context.swapchain() };
+        if (format == .sdr) return .{ .swapchain = context.swapchain(.sdr) };
+        const swapchain = context.swapchain(.scrgb_fp16);
+        const size: [2]u32 = .{ @intCast(swapchain.width), @intCast(swapchain.height) };
+        if (!self.offscreen.prepare(size, .scrgb_fp16, 1) or !self.scrgb_present.prepare()) return error.UnsupportedSurface;
+        return .{ .scrgb_window = swapchain };
     }
 
     /// What the last `.offscreen` surface was drawn into, in its format:
@@ -242,13 +271,13 @@ pub const Renderer = struct {
                     recorder.beginShapes();
                     const color: VertexColor = .of(rectangle.color, format);
                     fillRectangle(bounds, rectangle.corner_radius, color, self.corner_segments);
-                    if (self.composes_alpha) self.coverAlpha(recorder.layer, fillRectangle, .{ bounds, rectangle.corner_radius, color, self.corner_segments });
+                    if (self.covers_alpha) self.coverAlpha(recorder.layer, fillRectangle, .{ bounds, rectangle.corner_radius, color, self.corner_segments });
                 },
                 .border => |border| {
                     recorder.beginShapes();
                     const color: VertexColor = .of(border.color, format);
                     strokeBorder(bounds, border.widths, border.corner_radius, color, self.corner_segments);
-                    if (self.composes_alpha) self.coverAlpha(recorder.layer, strokeBorder, .{ bounds, border.widths, border.corner_radius, color, self.corner_segments });
+                    if (self.covers_alpha) self.coverAlpha(recorder.layer, strokeBorder, .{ bounds, border.widths, border.corner_radius, color, self.corner_segments });
                 },
                 .text => |line| if (self.text.trueTypeFont(line.style.font)) |font| {
                     recorder.beginShapes();
@@ -267,12 +296,12 @@ pub const Renderer = struct {
                 .gradient => |gradient| {
                     recorder.beginShapes();
                     fillGradient(bounds, gradient, format, self.corner_segments);
-                    if (self.composes_alpha) self.coverAlpha(recorder.layer, fillGradient, .{ bounds, gradient, format, self.corner_segments });
+                    if (self.covers_alpha) self.coverAlpha(recorder.layer, fillGradient, .{ bounds, gradient, format, self.corner_segments });
                 },
                 .shadow => |shadow| {
                     recorder.beginShapes();
                     drawShadow(bounds, shadow, format, self.corner_segments);
-                    if (self.composes_alpha) self.coverAlpha(recorder.layer, drawShadow, .{ bounds, shadow, format, self.corner_segments });
+                    if (self.covers_alpha) self.coverAlpha(recorder.layer, drawShadow, .{ bounds, shadow, format, self.corner_segments });
                 },
                 .backdrop_blur => |blur| {
                     if (self.backdrop_blurs.ready) if (recorder.beginBackdropBlur()) |layer| {
@@ -286,13 +315,13 @@ pub const Renderer = struct {
                     recorder.beginShapes();
                     const tint: VertexColor = .of(blur.tint, format);
                     fillRectangle(bounds, blur.corner_radius, tint, self.corner_segments);
-                    if (self.composes_alpha) self.coverAlpha(recorder.layer, fillRectangle, .{ bounds, blur.corner_radius, tint, self.corner_segments });
+                    if (self.covers_alpha) self.coverAlpha(recorder.layer, fillRectangle, .{ bounds, blur.corner_radius, tint, self.corner_segments });
                 },
                 .material => |material| if (!self.recordMaterial(&recorder, material, bounds, transforms.current(), viewport)) {
                     recorder.beginShapes();
                     const fallback: VertexColor = .of(material.fallback, format);
                     fillRectangle(bounds, material.corner_radius, fallback, self.corner_segments);
-                    if (self.composes_alpha) self.coverAlpha(recorder.layer, fillRectangle, .{ bounds, material.corner_radius, fallback, self.corner_segments });
+                    if (self.covers_alpha) self.coverAlpha(recorder.layer, fillRectangle, .{ bounds, material.corner_radius, fallback, self.corner_segments });
                 },
                 .clip_begin => |clip| {
                     clips.push(if (transforms.isActive()) transforms.current().boundsOf(clip).intersect(clips.current() orelse wholeViewport(viewport)) else clip);
@@ -331,7 +360,7 @@ pub const Renderer = struct {
         var outline: Outline = .{};
         outline.trace(bounds, material.corner_radius, .{}, self.corner_segments);
         if (!self.materials.record(material.handle, outline.points[0..outline.count], bounds, to_window, viewport, layer, self.format)) return false;
-        if (self.composes_alpha) {
+        if (self.covers_alpha) {
             const coverage: VertexColor = .{ .rgba = .{ .r = 0, .g = 0, .b = 0, .a = material.handle.opacity() } };
             self.coverAlpha(layer, fillRectangle, .{ bounds, material.corner_radius, coverage, self.corner_segments });
         }
@@ -355,7 +384,7 @@ pub const Renderer = struct {
             sgl.contextDrawLayer(into.context, @intCast(layer));
             if (into.is_swapchain) sdtx.drawLayer(@intCast(layer));
         }
-        if (self.composes_alpha) for (scissors, 0..) |scissor, layer| {
+        if (self.covers_alpha) for (scissors, 0..) |scissor, layer| {
             applyScissor(scissor, params);
             sgl.drawLayer(alphaCoverageLayer(layer));
         };

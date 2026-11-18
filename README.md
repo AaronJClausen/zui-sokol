@@ -220,8 +220,14 @@ which the renderer draws into without sokol_app, setting sokol_gfx up on
 a context of its own and presenting with vsync. With D3D11 (the default)
 that is a swapchain DirectComposition composes into the window with its
 alpha, so where the frame draws nothing a system backdrop (Mica,
-Acrylic) shows; with `-Dgl=true` it is an OpenGL 4.3 context, whose alpha
-Windows ignores. On Linux the native surface is `.wayland`, a native host's
+Acrylic) shows. With D3D11 the renderer declares `zui_output_formats`
+with `.scrgb_fp16`, so a host on an HDR monitor can open the window in
+it: the swapchain then holds half-float scRGB, the frame is drawn as into
+an `.scrgb_fp16` offscreen image, and one pass copies it into the
+swapchain, multiplied by the monitor's SDR white over 80 nits (read
+again at most twice a second), so that SDR white shows as other windows'
+white does and a color above it shows brighter. With `-Dgl=true` it is
+an OpenGL 4.3 context, whose alpha Windows ignores, and SDR only. On Linux the native surface is `.wayland`, a native host's
 Wayland surface, which the renderer draws into with an OpenGL 4.3 context
 made through EGL on a `wl_egl_window`, sized to each frame's viewport in
 physical pixels and presenting with vsync; its configuration has no
