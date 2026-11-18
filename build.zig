@@ -146,12 +146,19 @@ fn linkThroughLlvmOnLinux(compile: *std.Build.Step.Compile) void {
 
 /// On Windows the renderer draws into a native host's window with a
 /// context of its own: OpenGL through opengl32 and gdi32, or Direct3D 11
-/// composed into the window through DirectComposition.
+/// composed into the window through DirectComposition. On Linux it draws
+/// into a native host's Wayland surface with OpenGL through EGL.
 fn addRendererOptions(b: *std.Build, module: *std.Build.Module, opengl: bool) void {
     const options = b.addOptions();
     options.addOption(bool, "opengl", opengl);
     module.addOptions("zui_sokol_options", options);
-    if (module.resolved_target.?.result.os.tag != .windows) return;
+    const os = module.resolved_target.?.result.os.tag;
+    if (os == .linux) {
+        module.linkSystemLibrary("EGL", .{});
+        module.linkSystemLibrary("wayland-egl", .{});
+        return;
+    }
+    if (os != .windows) return;
     if (opengl) {
         module.linkSystemLibrary("opengl32", .{});
         module.linkSystemLibrary("gdi32", .{});

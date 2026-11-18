@@ -27,15 +27,24 @@ const VertexColor = destination.VertexColor;
 /// which keeps alpha so a system backdrop shows through, or with
 /// `-Dgl=true` an OpenGL context, whose alpha Windows ignores.
 pub const draws_into_win32 = builtin.os.tag == .windows;
-const native = if (!draws_into_win32) struct {
-    pub const Context = void;
-} else if (options.opengl) @import("wgl.zig") else @import("composition.zig");
+/// On Linux it draws into a native host's Wayland surface with an OpenGL
+/// context made through EGL.
+pub const draws_into_wayland = builtin.os.tag == .linux;
+const native_surface: ?zui.SurfaceKind = if (draws_into_win32) .win32 else if (draws_into_wayland) .wayland else null;
+const native = if (draws_into_win32)
+    (if (options.opengl) @import("wgl.zig") else @import("composition.zig"))
+else if (draws_into_wayland)
+    @import("egl.zig")
+else
+    struct {
+        pub const Context = void;
+    };
 
 /// The renderer contract, through sokol_gfx: draws zui frames with
 /// sokol_gl (shapes, images, TrueType text) and sokol_debugtext (bitmap
 /// text) into sokol_app's swapchain, its `.library` surface, into an image
 /// of its own for an `.offscreen` surface, which may be `.scrgb_fp16`, or,
-/// built with OpenGL on Windows, into a native host's `.win32` window.
+/// into a native host's window: `.win32` on Windows, `.wayland` on Linux.
 /// Both record into numbered layers that are replayed in order, so shapes
 /// and text interleave in zui's paint order, and each layer is drawn under
 /// its own scissor rectangle. A frame with a backdrop blur is drawn offscreen and
@@ -47,7 +56,7 @@ const native = if (!draws_into_win32) struct {
 /// color is drawn in linear light, and bitmap text by sokol_gl, since
 /// sokol_debugtext would write its colors' sRGB encoding.
 pub const Renderer = struct {
-    pub const zui_surfaces: zui.SurfaceKinds = if (draws_into_win32) .initMany(&.{ .library, .offscreen, .win32 }) else .initMany(&.{ .library, .offscreen });
+    pub const zui_surfaces: zui.SurfaceKinds = if (native_surface) |kind| .initMany(&.{ .library, .offscreen, kind }) else .initMany(&.{ .library, .offscreen });
     pub const zui_commands: zui.CommandSet = zui_sokol_ui.commands;
     pub const zui_extended_color = true;
     pub const ImageHandle = Image;
@@ -117,14 +126,17 @@ pub const Renderer = struct {
     /// sokol_gfx up on it, then does what `init` does. `deinit` then also
     /// shuts sokol_gfx down.
     pub fn initForSurface(text: *const Text, surface: zui.Surface) !Renderer {
-        if (!draws_into_win32 or surface != .win32) return error.UnsupportedSurface;
-        var context = try native.Context.init(surface.win32.hwnd);
+        var context = switch (surface) {
+            .win32 => |window| if (comptime draws_into_win32) try native.Context.init(window.hwnd) else return error.UnsupportedSurface,
+            .wayland => |window| if (comptime draws_into_wayland) try native.Context.init(window.display, window.surface) else return error.UnsupportedSurface,
+            else => return error.UnsupportedSurface,
+        };
         errdefer context.deinit();
         sg.setup(.{ .environment = context.environment(), .logger = .{ .func = sokol.log.func } });
         if (!sg.isvalid()) return error.SokolGfxSetupFailed;
         var renderer: Renderer = .init(text);
         renderer.native = context;
-        renderer.composes_alpha = !options.opengl;
+        renderer.composes_alpha = draws_into_win32 and !options.opengl;
         return renderer;
     }
 
@@ -140,7 +152,7 @@ pub const Renderer = struct {
         sgl.destroyPipeline(self.alpha_coverage_pipeline);
         sdtx.shutdown();
         sgl.shutdown();
-        if (comptime draws_into_win32) if (self.native) |*context| {
+        if (comptime native_surface != null) if (self.native) |*context| {
             sg.shutdown();
             context.deinit();
         };
@@ -159,6 +171,7 @@ pub const Renderer = struct {
         const target: Target = switch (surface) {
             .library => .{ .swapchain = sokol.glue.swapchain() },
             .win32 => if (comptime !draws_into_win32) return error.UnsupportedSurface else if (self.native) |*context| .{ .swapchain = context.swapchain() } else return error.UnsupportedSurface,
+            .wayland => if (comptime !draws_into_wayland) return error.UnsupportedSurface else if (self.native) |*context| .{ .swapchain = context.swapchain(physicalSize(frame.params)) } else return error.UnsupportedSurface,
             .offscreen => |offscreen| if (self.offscreen.prepare(offscreen.size, offscreen.format, self.offscreen_sample_count)) .offscreen else return error.UnsupportedSurface,
             else => return error.UnsupportedSurface,
         };
@@ -192,7 +205,7 @@ pub const Renderer = struct {
             sg.endPass();
         }
         sg.commit();
-        if (comptime draws_into_win32) if (surface == .win32) self.native.?.present();
+        if (comptime native_surface) |kind| if (surface == kind) self.native.?.present();
     }
 
     /// What the last `.offscreen` surface was drawn into, in its format:
@@ -582,6 +595,12 @@ fn columnMajor(affine: zui.Affine) [16]f32 {
 
 fn wholeViewport(viewport: [2]f32) zui.Rect {
     return .{ .x = 0, .y = 0, .width = viewport[0], .height = viewport[1] };
+}
+
+/// The frame's viewport in physical pixels.
+fn physicalSize(params: zui.FrameParams) [2]i32 {
+    const pixels_per_unit = params.scale * params.zoom;
+    return .{ @intFromFloat(@round(params.viewport[0] * pixels_per_unit)), @intFromFloat(@round(params.viewport[1] * pixels_per_unit)) };
 }
 
 /// An `.scrgb_fp16` target is cleared in linear light.

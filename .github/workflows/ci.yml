@@ -37,8 +37,8 @@ jobs:
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: ${{ env.ZIG_VERSION }}
-      - name: Install sokol's X11, OpenGL and PulseAudio dependencies, and Xvfb
-        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxi-dev libxcursor-dev libgl1-mesa-dev libpulse-dev xvfb
+      - name: Install sokol's X11, OpenGL and PulseAudio dependencies, EGL and Wayland's, and Xvfb
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxi-dev libxcursor-dev libgl1-mesa-dev libpulse-dev libegl-dev libwayland-dev xvfb
       - run: xvfb-run --auto-servernum zig build conformance
 
   test:
@@ -54,9 +54,9 @@ jobs:
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: ${{ env.ZIG_VERSION }}
-      - name: Install sokol's X11, OpenGL and PulseAudio dependencies
+      - name: Install sokol's X11, OpenGL and PulseAudio dependencies, and EGL and Wayland's
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxi-dev libxcursor-dev libgl1-mesa-dev libpulse-dev
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxi-dev libxcursor-dev libgl1-mesa-dev libpulse-dev libegl-dev libwayland-dev
       - run: zig build test
       - run: zig build check
       - name: Compile the renderer for a native host's win32 window, with OpenGL

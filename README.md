@@ -14,7 +14,7 @@ its own, on D3D11 (Windows), Metal (macOS) or OpenGL (Linux).
 - zui, fetched automatically
 - sokol-zig, fetched automatically
 - stb_truetype, from [stb](https://github.com/nothings/stb), fetched automatically
-- On Linux: `libx11-dev libxi-dev libxcursor-dev libgl1-mesa-dev libpulse-dev`
+- On Linux: `libx11-dev libxi-dev libxcursor-dev libgl1-mesa-dev libpulse-dev libegl-dev libwayland-dev`
 
 ## Run the tour
 
@@ -221,7 +221,11 @@ a context of its own and presenting with vsync. With D3D11 (the default)
 that is a swapchain DirectComposition composes into the window with its
 alpha, so where the frame draws nothing a system backdrop (Mica,
 Acrylic) shows; with `-Dgl=true` it is an OpenGL 4.3 context, whose alpha
-Windows ignores:
+Windows ignores. On Linux the native surface is `.wayland`, a native host's
+Wayland surface, which the renderer draws into with an OpenGL 4.3 context
+made through EGL on a `wl_egl_window`, sized to each frame's viewport in
+physical pixels and presenting with vsync; its configuration has no
+alpha, so the compositor shows the frame opaque:
 
 ```zig
 var renderer: zui_sokol.Renderer = try .initForSurface(&text, host.zuiSurface(.main));
