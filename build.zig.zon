@@ -5,8 +5,8 @@
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .zui = .{
-            .url = "git+https://github.com/AaronJClausen/zui#daba4a7d6e0ace1d30cb25c31b6279ef932a7902",
-            .hash = "zui-0.5.0-xfvfqrHcGwCklqG5E10630_ayd3E99yI6yR7nPJ1nn41",
+            .url = "git+https://github.com/AaronJClausen/zui#7d9117acf92b4041044b64e9604392a0def59b5d",
+            .hash = "zui-0.5.0-xfvfqi7vHABEAXHqjHlbLr7xqQ4rLAjOituFbaNLEPG_",
         },
         .sokol = .{
             .url = "git+https://github.com/floooh/sokol-zig#cc3473c17bed471d608e221adf0fdcb5a61163e0",
