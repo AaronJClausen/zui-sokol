@@ -21,6 +21,7 @@ pub const Sources = struct {
 
 pub const Ui = zui.Context(zui_sokol_ui.config(.{
     .Sources = Sources,
+    .features = .{ .semantics = true },
     .limits = .{
         .max_elements = 16384,
         .max_depth = 128,
