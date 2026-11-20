@@ -226,7 +226,12 @@ it: the swapchain then holds half-float scRGB, the frame is drawn as into
 an `.scrgb_fp16` offscreen image, and one pass copies it into the
 swapchain, multiplied by the monitor's SDR white over 80 nits (read
 again at most twice a second), so that SDR white shows as other windows'
-white does and a color above it shows brighter. With `-Dgl=true` it is
+white does and a color above it shows brighter. With D3D11 it draws into
+many windows: `zuiAttachSurface` makes a swapchain for each window after
+the first on the first one's device, which the renderer holds until
+`deinit`, so any window may close first, and each window keeps its own
+scRGB and backdrop-blur targets; `zuiDetachSurface` frees them before the
+window closes, and `zui_app` calls both. With `-Dgl=true` it is
 an OpenGL 4.3 context, whose alpha Windows ignores, and SDR only. On Linux the native surface is `.wayland`, a native host's
 Wayland surface, which the renderer draws into with an OpenGL 4.3 context
 made through EGL on a `wl_egl_window`, sized to each frame's viewport in

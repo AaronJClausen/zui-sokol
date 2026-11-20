@@ -12,24 +12,44 @@ const RECT = extern struct { left: i32 = 0, top: i32 = 0, right: i32 = 0, bottom
 const Composition = opaque {};
 
 extern "user32" fn GetClientRect(hwnd: HWND, rect: *RECT) callconv(.winapi) c_int;
-extern fn zui_sokol_composition_create(hwnd: HWND, width: c_uint, height: c_uint, out: *?*Composition) callconv(.c) i32;
+extern fn zui_sokol_composition_create(hwnd: HWND, width: c_uint, height: c_uint, shared_device: ?*anyopaque, out: *?*Composition) callconv(.c) i32;
 extern fn zui_sokol_composition_destroy(self: *Composition) callconv(.c) void;
 extern fn zui_sokol_composition_device(self: *Composition) callconv(.c) ?*anyopaque;
 extern fn zui_sokol_composition_device_context(self: *Composition) callconv(.c) ?*anyopaque;
 extern fn zui_sokol_composition_frame(self: *Composition, width: c_uint, height: c_uint, in_scrgb: c_int, render_view: *?*anyopaque, depth_stencil_view: *?*anyopaque) callconv(.c) i32;
 extern fn zui_sokol_composition_sdr_white_scale(self: *Composition) callconv(.c) f32;
 extern fn zui_sokol_composition_present(self: *Composition) callconv(.c) i32;
+extern fn zui_sokol_device_retain(device: *anyopaque) callconv(.c) void;
+extern fn zui_sokol_device_release(device: *anyopaque) callconv(.c) void;
 
 pub const Context = struct {
     hwnd: HWND,
     composition: *Composition,
 
     pub fn init(window: *anyopaque) error{NoCompositionSwapchain}!Context {
+        return initSharing(window, null);
+    }
+
+    /// A swapchain for `window` on `device`, another context's, or on a
+    /// device of its own when it is null.
+    pub fn initSharing(window: *anyopaque, device: ?*anyopaque) error{NoCompositionSwapchain}!Context {
         const hwnd: HWND = @ptrCast(window);
         const size = clientSize(hwnd);
         var composition: ?*Composition = null;
-        if (zui_sokol_composition_create(hwnd, size[0], size[1], &composition) < 0) return error.NoCompositionSwapchain;
+        if (zui_sokol_composition_create(hwnd, size[0], size[1], device, &composition) < 0) return error.NoCompositionSwapchain;
         return .{ .hwnd = hwnd, .composition = composition.? };
+    }
+
+    /// The Direct3D 11 device, held for as long as `releaseDevice` is not
+    /// called, whichever contexts on it are freed.
+    pub fn retainDevice(self: *const Context) *anyopaque {
+        const device = zui_sokol_composition_device(self.composition).?;
+        zui_sokol_device_retain(device);
+        return device;
+    }
+
+    pub fn releaseDevice(device: *anyopaque) void {
+        zui_sokol_device_release(device);
     }
 
     pub fn deinit(self: *Context) void {

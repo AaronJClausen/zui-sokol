@@ -100,7 +100,9 @@ void zui_sokol_composition_destroy(zui_sokol_composition *self) {
     free(self);
 }
 
-HRESULT zui_sokol_composition_create(HWND hwnd, UINT width, UINT height, zui_sokol_composition **out) {
+// With `shared_device`, the swapchain is made on it, so windows share one
+// device and what sokol_gfx made on it; each composition holds a reference.
+HRESULT zui_sokol_composition_create(HWND hwnd, UINT width, UINT height, void *shared_device, zui_sokol_composition **out) {
     *out = NULL;
     zui_sokol_composition *self = calloc(1, sizeof(*self));
     if (!self) return E_OUTOFMEMORY;
@@ -113,7 +115,14 @@ HRESULT zui_sokol_composition_create(HWND hwnd, UINT width, UINT height, zui_sok
     IDXGIAdapter *adapter = NULL;
     IDXGIFactory2 *factory = NULL;
     D3D_FEATURE_LEVEL level = D3D_FEATURE_LEVEL_11_0;
-    HRESULT result = D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, D3D11_CREATE_DEVICE_BGRA_SUPPORT, &level, 1, D3D11_SDK_VERSION, &self->device, NULL, &self->context);
+    HRESULT result = S_OK;
+    if (shared_device) {
+        self->device = (ID3D11Device *)shared_device;
+        ID3D11Device_AddRef(self->device);
+        ID3D11Device_GetImmediateContext(self->device, &self->context);
+    } else {
+        result = D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, D3D11_CREATE_DEVICE_BGRA_SUPPORT, &level, 1, D3D11_SDK_VERSION, &self->device, NULL, &self->context);
+    }
     if (SUCCEEDED(result)) result = ID3D11Device_QueryInterface(self->device, &iid_dxgi_device, (void **)&dxgi_device);
     if (SUCCEEDED(result)) result = IDXGIDevice_GetAdapter(dxgi_device, &adapter);
     if (SUCCEEDED(result)) result = IDXGIAdapter_GetParent(adapter, &iid_dxgi_factory2, (void **)&factory);
@@ -154,6 +163,11 @@ HRESULT zui_sokol_composition_create(HWND hwnd, UINT width, UINT height, zui_sok
 }
 
 void *zui_sokol_composition_device(zui_sokol_composition *self) { return self->device; }
+
+// The renderer's own reference to the device, so it outlives the window
+// whose composition made it.
+void zui_sokol_device_retain(void *device) { ID3D11Device_AddRef((ID3D11Device *)device); }
+void zui_sokol_device_release(void *device) { release(device); }
 void *zui_sokol_composition_device_context(zui_sokol_composition *self) { return self->context; }
 
 static HRESULT set_color_space(zui_sokol_composition *self, BOOL in_scrgb) {

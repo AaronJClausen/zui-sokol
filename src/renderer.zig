@@ -33,6 +33,9 @@ pub const draws_into_win32 = builtin.os.tag == .windows;
 pub const draws_into_wayland = builtin.os.tag == .linux;
 /// A composed window can hold half-float scRGB; an OpenGL one cannot.
 const presents_scrgb = draws_into_win32 and !options.opengl;
+/// Composed windows share one Direct3D 11 device, so the renderer draws
+/// into many; with OpenGL, or on Wayland, it draws into one.
+const draws_into_many_windows = draws_into_win32 and !options.opengl;
 const native_surface: ?zui.SurfaceKind = if (draws_into_win32) .win32 else if (draws_into_wayland) .wayland else null;
 const native = if (draws_into_win32)
     (if (options.opengl) @import("wgl.zig") else @import("composition.zig"))
@@ -60,7 +63,8 @@ else
 /// sokol_debugtext would write its colors' sRGB encoding. A `.win32`
 /// surface in `.scrgb_fp16` is drawn so into an image, which is then
 /// copied into the window's half-float swapchain at the monitor's SDR
-/// white.
+/// white. Windows after the first are attached with `zuiAttachSurface`,
+/// each a swapchain on the first one's device, with targets of its own.
 pub const Renderer = struct {
     pub const zui_surfaces: zui.SurfaceKinds = if (native_surface) |kind| .initMany(&.{ .library, .offscreen, kind }) else .initMany(&.{ .library, .offscreen });
     pub const zui_commands: zui.CommandSet = zui_sokol_ui.commands;
@@ -71,6 +75,17 @@ pub const Renderer = struct {
 
     const max_layers = 1024;
     const present_layer = 2 * max_layers;
+    /// Windows drawn into besides the one `initForSurface` was given.
+    pub const max_attached_surfaces = 7;
+
+    /// A window attached after the first: its swapchain, and the targets
+    /// sized to it, which would be made again every frame if windows of
+    /// two sizes shared them.
+    const AttachedSurface = struct {
+        context: native.Context,
+        offscreen: OffscreenTarget = .{},
+        backdrop_blurs: BackdropBlurs = .{},
+    };
 
     text: *const Text,
     /// What each frame's pass clears to before drawing.
@@ -88,8 +103,15 @@ pub const Renderer = struct {
     /// commands then share the last layer.
     layer_overflows: u32 = 0,
     layer_scissors: [max_layers]?zui.Rect = undefined,
-    /// The context of a `.win32` surface, which the renderer set up itself.
+    /// The context of the surface `initForSurface` was given, until it is
+    /// detached.
     native: ?native.Context = null,
+    attached: [max_attached_surfaces]?AttachedSurface = @splat(null),
+    /// The device every composed window draws with, held from
+    /// `initForSurface` to `deinit`, so it outlives the first window.
+    shared_device: ?*anyopaque = null,
+    /// `initForSurface` set sokol_gfx up, so `deinit` shuts it down.
+    owns_gfx: bool = false,
     /// Made on the first TrueType text, so bitmap-only applications never
     /// pay for it.
     glyphs: ?*GlyphAtlas = null,
@@ -147,11 +169,17 @@ pub const Renderer = struct {
         if (!sg.isvalid()) return error.SokolGfxSetupFailed;
         var renderer: Renderer = .init(text);
         renderer.native = context;
+        renderer.owns_gfx = true;
         renderer.composes_alpha = draws_into_win32 and !options.opengl;
+        if (comptime draws_into_many_windows) renderer.shared_device = context.retainDevice();
         return renderer;
     }
 
     pub fn deinit(self: *Renderer) void {
+        for (&self.attached) |*slot| if (slot.*) |*attached| {
+            attached.backdrop_blurs.deinit();
+            attached.offscreen.deinit();
+        };
         self.backdrop_blurs.deinit();
         self.materials.deinit();
         self.offscreen.deinit();
@@ -164,10 +192,63 @@ pub const Renderer = struct {
         sgl.destroyPipeline(self.alpha_coverage_pipeline);
         sdtx.shutdown();
         sgl.shutdown();
-        if (comptime native_surface != null) if (self.native) |*context| {
+        if (comptime native_surface != null) if (self.owns_gfx) {
             sg.shutdown();
-            context.deinit();
+            if (self.native) |*context| context.deinit();
+            if (comptime draws_into_many_windows) {
+                for (&self.attached) |*slot| if (slot.*) |*attached| attached.context.deinit();
+                if (self.shared_device) |device| native.Context.releaseDevice(device);
+            }
         };
+    }
+
+    /// Makes a swapchain for another `.win32` window on the first one's
+    /// device, so `zuiSubmit` can draw into it. One already drawn into is
+    /// left as it is.
+    pub fn zuiAttachSurface(self: *Renderer, surface: zui.Surface) error{ UnsupportedSurface, NoCompositionSwapchain, TooManySurfaces }!void {
+        if (comptime !draws_into_many_windows) return error.UnsupportedSurface;
+        const window = switch (surface) {
+            .win32 => |window| window,
+            else => return error.UnsupportedSurface,
+        };
+        if (self.contextOf(window.hwnd) != null) return;
+        const device = self.shared_device orelse return error.UnsupportedSurface;
+        const slot = for (&self.attached) |*slot| {
+            if (slot.* == null) break slot;
+        } else return error.TooManySurfaces;
+        slot.* = .{ .context = try native.Context.initSharing(window.hwnd, device) };
+    }
+
+    /// Frees what the renderer keeps for `surface`'s window, the first one
+    /// included, before the window closes.
+    pub fn zuiDetachSurface(self: *Renderer, surface: zui.Surface) void {
+        if (comptime !draws_into_many_windows) return;
+        const window = switch (surface) {
+            .win32 => |window| window,
+            else => return,
+        };
+        if (self.native) |*context| if (context.hwnd == @as(@TypeOf(context.hwnd), @ptrCast(window.hwnd))) {
+            context.deinit();
+            self.native = null;
+            return;
+        };
+        for (&self.attached) |*slot| if (slot.*) |*attached| if (attached.context.hwnd == @as(@TypeOf(attached.context.hwnd), @ptrCast(window.hwnd))) {
+            attached.backdrop_blurs.deinit();
+            attached.offscreen.deinit();
+            attached.context.deinit();
+            slot.* = null;
+            return;
+        };
+    }
+
+    fn contextOf(self: *Renderer, hwnd: *anyopaque) ?*native.Context {
+        if (self.native) |*context| if (@intFromPtr(context.hwnd) == @intFromPtr(hwnd)) return context;
+        return if (self.attachedOf(hwnd)) |attached| &attached.context else null;
+    }
+
+    fn attachedOf(self: *Renderer, hwnd: *anyopaque) ?*AttachedSurface {
+        for (&self.attached) |*slot| if (slot.*) |*attached| if (@intFromPtr(attached.context.hwnd) == @intFromPtr(hwnd)) return attached;
+        return null;
     }
 
     /// Draws `frame` into `surface`, cleared to `clear_color`, and commits
@@ -179,10 +260,23 @@ pub const Renderer = struct {
     /// ui.release(frame);
     /// ```
     pub fn zuiSubmit(self: *Renderer, surface: zui.Surface, frame: anytype) error{UnsupportedSurface}!void {
+        if (comptime draws_into_many_windows) if (surface == .win32) if (self.attachedOf(surface.win32.hwnd)) |attached| {
+            std.mem.swap(OffscreenTarget, &self.offscreen, &attached.offscreen);
+            std.mem.swap(BackdropBlurs, &self.backdrop_blurs, &attached.backdrop_blurs);
+            defer {
+                std.mem.swap(OffscreenTarget, &self.offscreen, &attached.offscreen);
+                std.mem.swap(BackdropBlurs, &self.backdrop_blurs, &attached.backdrop_blurs);
+            }
+            return self.submitInto(surface, &attached.context, frame);
+        };
+        return self.submitInto(surface, if (self.native) |*context| context else null, frame);
+    }
+
+    fn submitInto(self: *Renderer, surface: zui.Surface, native_context: ?*native.Context, frame: anytype) error{UnsupportedSurface}!void {
         const target: Target = switch (surface) {
             .library => .{ .swapchain = sokol.glue.swapchain() },
-            .win32 => |window| if (comptime !draws_into_win32) return error.UnsupportedSurface else if (self.native) |*context| try self.win32Target(context, window.format) else return error.UnsupportedSurface,
-            .wayland => if (comptime !draws_into_wayland) return error.UnsupportedSurface else if (self.native) |*context| .{ .swapchain = context.swapchain(physicalSize(frame.params)) } else return error.UnsupportedSurface,
+            .win32 => |window| if (comptime !draws_into_win32) return error.UnsupportedSurface else if (native_context) |context| try self.win32Target(context, window.format) else return error.UnsupportedSurface,
+            .wayland => if (comptime !draws_into_wayland) return error.UnsupportedSurface else if (native_context) |context| .{ .swapchain = context.swapchain(physicalSize(frame.params)) } else return error.UnsupportedSurface,
             .offscreen => |offscreen| if (self.offscreen.prepare(offscreen.size, offscreen.format, self.offscreen_sample_count)) .offscreen else return error.UnsupportedSurface,
             else => return error.UnsupportedSurface,
         };
@@ -216,9 +310,9 @@ pub const Renderer = struct {
             sgl.contextDrawLayer(into.context, present_layer);
             sg.endPass();
         }
-        if (comptime presents_scrgb) if (target == .scrgb_window) self.scrgb_present.draw(target.scrgb_window, self.offscreen.image, self.native.?.sdrWhiteScale());
+        if (comptime presents_scrgb) if (target == .scrgb_window) self.scrgb_present.draw(target.scrgb_window, self.offscreen.image, native_context.?.sdrWhiteScale());
         sg.commit();
-        if (comptime native_surface) |kind| if (surface == kind) self.native.?.present();
+        if (comptime native_surface) |kind| if (surface == kind) native_context.?.present();
     }
 
     const Target = union(enum) {
